@@ -16,3 +16,4 @@ _ai_progress.json
 .hypothesis
 .hypothesis_cache/
 .venv/
+.pypirc/

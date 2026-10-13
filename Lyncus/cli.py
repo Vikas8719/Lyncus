@@ -446,8 +446,8 @@ def _write_scan_outputs(
     options: _ScanOutputOptions,
     report: _ScanReport,
 ) -> None:
-        # Count tools that actually ran (not skipped) — used for score N/A logic
-        ran_tools_count = len(report.available_tools)
+    # Count tools that actually ran (not skipped) — used for score N/A logic
+    ran_tools_count = len(report.available_tools)
 
     do_all = options.output == "all"
     if options.output == "table" or do_all:

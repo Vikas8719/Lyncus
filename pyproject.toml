@@ -7,7 +7,7 @@ name = "Lyncus"
 version = "1.0.0"
 description = "Multi-language code quality CLI — fake tests, hardcoded values aur dead code pakadta hai"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.11"
 keywords = [
   "code-quality", "linter", "cli", "static-analysis",
@@ -17,7 +17,6 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
@@ -63,11 +62,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage      = "https://github.com/yourname/Lyncus"
-Documentation = "https://github.com/yourname/Lyncus#readme"
-Repository    = "https://github.com/yourname/Lyncus"
-"Bug Tracker" = "https://github.com/yourname/Lyncus/issues"
-Changelog     = "https://github.com/yourname/Lyncus/CHANGELOG.md"
+Homepage      = "https://github.com/Vikas8719/Lyncus"
+Documentation = "https://github.com/Vikas8719/Lyncus#readme"
+Repository    = "https://github.com/Vikas8719/Lyncus"
+"Bug Tracker" = "https://github.com/Vikas8719/Lyncus/issues"
+Changelog     = "https://github.com/Vikas8719/Lyncus/CHANGELOG.md"
 
 [project.scripts]
 Lyncus = "Lyncus.cli:main"
