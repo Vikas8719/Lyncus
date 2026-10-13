@@ -1,0 +1,212 @@
+name: 🐺 Lyncus Code Quality
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  Lyncus-scan:
+    name: Lyncus Quality Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+
+      # ── 2. Python setup ────────────────────────────────────────────────────
+      - name: 🐍 Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      # ── 3. Install the checked-out project and development tools ───────────
+      - name: 🐺 Install Lyncus and development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev,python]"
+
+      # ── 4. Required quality gates ──────────────────────────────────────────
+      - name: 🧹 Ruff
+        run: |
+          python -m ruff check Lyncus tests
+
+      - name: 🧭 Mypy
+        run: |
+          python -m mypy Lyncus
+
+      - name: 🧪 Pytest
+        run: |
+          python -m pytest --hypothesis-profile=lyncus
+
+      - name: 📈 Branch coverage
+        run: |
+          python -m pytest --hypothesis-profile=lyncus --cov=Lyncus --cov-branch --cov-report=term-missing --cov-report=xml
+
+      - name: ♻️ Restore mutmut results
+        id: mutmut-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: mutants/
+          key: mutmut-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.ref_name }}-${{ hashFiles('pyproject.toml', 'tests/**/*.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            mutmut-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.ref_name }}-${{ hashFiles('pyproject.toml', 'tests/**/*.py') }}-
+
+      - name: 🧬 Mutmut mutation testing
+        id: mutmut
+        run: |
+          python -m mutmut run
+          python -m mutmut export-cicd-stats
+          python -c '
+          import json, sys
+          with open("mutants/mutmut-cicd-stats.json", encoding="utf-8") as f:
+              stats = json.load(f)
+          killed = stats.get("killed", 0)
+          tested = max(stats.get("total", 0) - stats.get("skipped", 0), 0)
+          score = (killed + stats.get("timeout", 0)) / tested * 100 if tested else 0
+          print(f"Mutation score: {score:.1f}% (minimum: 75.0%; tested mutants: {tested})")
+          sys.exit(0 if tested and score >= 75 else 1)
+          '
+
+      - name: 💾 Save mutmut results
+        if: always() && steps.mutmut.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: mutants/
+          key: mutmut-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.ref_name }}-${{ hashFiles('pyproject.toml', 'tests/**/*.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # ── 5. Run Lyncus scan ─────────────────────────────────────────────────
+      - name: 🔍 Run Lyncus scan
+        id: Lyncus
+        run: |
+          Lyncus scan . \
+            --skip-slow \
+            --output json \
+            --severity all \
+            --report-file Lyncus-report.json \
+            --html-file Lyncus-report.html \
+            --ci-mode
+        continue-on-error: true
+
+      # ── 6. Upload reports ──────────────────────────────────────────────────
+      - name: 📊 Upload Lyncus reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Lyncus-reports
+          path: |
+            Lyncus-report.json
+            Lyncus-report.html
+            mutants/mutmut-cicd-stats.json
+            coverage.xml
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # ── 8. Fail on critical issues ─────────────────────────────────────────
+      - name: ❌ Fail if critical issues found
+        run: |
+          python -c "
+          import json, sys
+          with open('Lyncus-report.json') as f:
+              report = json.load(f)
+          critical = report['summary']['critical']
+          if critical > 0:
+              print(f'FAILED: {critical} critical issue(s) found!')
+              sys.exit(1)
+          else:
+              print('PASSED: No critical issues.')
+          "
+  pr-comment:
+    name: Post Lyncus report comment
+    if: always() && github.event_name == 'pull_request'
+    needs: Lyncus-scan
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: 📥 Download scan report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: Lyncus-reports
+          path: reports
+      # ── 7. PR comment with summary ─────────────────────────────────────────
+      - name: 💬 Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report = {};
+            try {
+              report = JSON.parse(fs.readFileSync('reports/Lyncus-report.json', 'utf8'));
+            } catch(e) {
+              console.log('Report not found');
+              return;
+            }
+
+            const { summary, language, scan_time_seconds } = report;
+            const scoreEmoji = summary.score >= 80 ? '🟢' : summary.score >= 50 ? '🟡' : '🔴';
+            const body = `## 🐺 Lyncus Code Quality Report
+
+            | Metric | Value |
+            |--------|-------|
+            | Score | ${scoreEmoji} **${summary.score}/100** |
+            | Language | ${language} |
+            | Critical | ❌ ${summary.critical} |
+            | Warnings | ⚠️ ${summary.warning} |
+            | Info | ℹ️ ${summary.info} |
+            | Scan time | ${scan_time_seconds}s |
+
+            ${summary.critical > 0 ? '> ⚠️ **Critical issues found!** Please fix before merging.' : '✅ No critical issues found.'}
+
+            <details>
+            <summary>Top problems</summary>
+
+            ${report.problems.slice(0, 5).map(p =>
+              `- **[${p.severity.toUpperCase()}]** \`${p.file}:${p.line}\` — ${p.message}`
+            ).join('\n')}
+
+            ${report.problems.length > 5 ? `\n*... and ${report.problems.length - 5} more. See full report in artifacts.*` : ''}
+            </details>
+
+            > Generated by [Lyncus](https://github.com/yourname/Lyncus) 🐺`;
+
+            // Delete old comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const comment of comments.data) {
+              if (comment.body.includes('🐺 Lyncus')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            // Post new comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

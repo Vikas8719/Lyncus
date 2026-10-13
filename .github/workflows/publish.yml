@@ -1,0 +1,244 @@
+name: 🚀 Lyncus — Publish to PyPI
+
+# ─── Trigger ─────────────────────────────────────────────────────────────────
+# Sirf jab GitHub Release banao tab publish hoga
+on:
+  release:
+    types: [published]
+
+  # Manual trigger bhi — emergency ya test release ke liye
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        required: true
+        default: "testpypi"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+# ─── Permissions (OIDC ke liye zaroori) ──────────────────────────────────────
+permissions:
+  contents: read
+  id-token: write       # ← PyPI Trusted Publisher (OIDC) ke liye MUST hai
+
+# ─── Jobs ────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 1. Quality gate — sirf clean code publish hoga ────────────────────────
+  quality-gate:
+    name: ✅ Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 📦 Install deps
+        run: |
+          pip install --upgrade pip
+          pip install ".[dev,python]"
+
+      - name: 🧹 Ruff lint
+        run: ruff check Lyncus tests
+
+      - name: 🧭 Mypy typecheck
+        run: mypy Lyncus
+
+      - name: 🧪 Full test suite
+        run: pytest --hypothesis-profile=lyncus -x
+
+      - name: 📈 Coverage check (≥70%)
+        run: |
+          pytest --hypothesis-profile=lyncus \
+            --cov=Lyncus --cov-branch \
+            --cov-fail-under=70 \
+            --cov-report=term-missing
+
+  # ── 2. Build wheel + sdist ─────────────────────────────────────────────────
+  build:
+    name: 🔨 Build Distribution
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Build wheel & sdist
+        run: |
+          pip install --upgrade pip build
+          python -m build
+
+      - name: 🔍 Twine check (dist valid hai?)
+        run: |
+          pip install twine
+          twine check dist/*
+
+      - name: 📤 Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+          retention-days: 7
+
+  # ── 3. TestPyPI publish (dry run) ──────────────────────────────────────────
+  publish-testpypi:
+    name: 🧪 Publish → TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/Lyncus
+    permissions:
+      id-token: write
+    steps:
+      - name: 📥 Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+
+      - name: 🚀 Publish to TestPyPI (OIDC — no token needed)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # password: nahi chahiye — OIDC Trusted Publisher use ho raha hai
+          skip-existing: true
+          verbose: true
+
+  # ── 4. Smoke test — TestPyPI install karke check karo ─────────────────────
+  smoke-test:
+    name: 💨 Smoke Test (TestPyPI)
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: ⏳ Wait for TestPyPI propagation (60s)
+        run: sleep 60
+
+      - name: 📦 Install from TestPyPI
+        run: |
+          pip install \
+            --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ \
+            Lyncus
+
+      - name: ✅ Verify install
+        run: |
+          Lyncus --version
+          Lyncus doctor
+
+  # ── 5. Real PyPI publish (Release trigger ya manual=pypi) ─────────────────
+  publish-pypi:
+    name: 🌍 Publish → PyPI (Production)
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    # Sirf tab chalao jab:
+    # a) GitHub Release publish hua ho, ya
+    # b) Manual trigger mein "pypi" select kiya ho
+    if: |
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'pypi')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/Lyncus
+    permissions:
+      id-token: write
+    steps:
+      - name: 📥 Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+
+      - name: 🚀 Publish to PyPI (OIDC Trusted Publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+          # Token nahi chahiye — OIDC se authenticate hoga
+
+  # ── 6. Docker image build & push ──────────────────────────────────────────
+  docker:
+    name: 🐳 Build & Push Docker Image
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write     # GHCR ke liye
+      id-token: write     # Cosign OIDC signing ke liye
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🔑 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔑 Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            lyncus/lyncus
+            ghcr.io/${{ github.repository_owner }}/lyncus
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔧 Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🐳 Build & Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ── 7. GitHub Release assets attach karo ──────────────────────────────────
+  release-assets:
+    name: 📎 Attach dist to GitHub Release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+      - name: 📥 Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+
+      - name: 📎 Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

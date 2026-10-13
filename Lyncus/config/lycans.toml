@@ -1,0 +1,25 @@
+[Lyncus]
+version = "1.0"
+
+[scan]
+languages = ["auto"]        # ya ["python", "cpp", "rust"]
+severity  = "all"           # critical / warning / all
+output    = "table"         # table / json / html
+
+[thresholds]
+min_coverage     = 80       # % branch coverage minimum
+max_complexity   = 10       # cyclomatic complexity maximum
+mutation_score   = 75       # % mutation score minimum
+
+[ignore]
+paths = ["venv/", "node_modules/", ".git/", "dist/", "build/",".env",".xml",".md"]
+rules = []
+
+[hardcode]
+check_paths       = true
+check_credentials = true
+check_magic_nums  = true
+check_urls        = true
+
+[tools]
+skip_unavailable = true
