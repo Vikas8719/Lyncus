@@ -1,4 +1,4 @@
-.__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 .mypy_cache/
@@ -13,7 +13,7 @@ htmlcov/
 mutants/
 *.log
 _ai_progress.json
-.hypothesis
+.hypothesis/
 .hypothesis_cache/
 .venv/
-.pypirc/
+coverage.json
