@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "Lyncus"
-version = "1.0.0"
-description = "Multi-language code quality CLI — fake tests, hardcoded values aur dead code pakadta hai"
+version = "1.0.1"
+description = "Multi-language code quality CLI — detects fake tests, hardcoded values, and dead code"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
