@@ -11,6 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/Lyncus?color=blue)](https://pypi.org/project/Lyncus/)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-red?logo=github-sponsors)](https://github.com/sponsors/Vikas8719)
 
 [Installation](#-installation) · [Quick Start](#-quick-start) · [Commands](#-commands-reference) · [Configuration](#-configuration) · [Contributing](#-contributing)
 
