@@ -2,7 +2,7 @@
 
 ### 🚀 Initial Release — Lyncus v1.0.0
 
-**"Jo dikhta nahi, woh pakad lega"**
+**"Caught What Cannot be Seen"**
 
 ---
 
@@ -32,22 +32,22 @@
 #### Output Formats (Phase 3-4)
 
 - 📊 **Terminal table** — Rich-powered colored output
-- 📄 **JSON** — Machine-readable, CI/CD ke liye
+- 📄 **JSON** — Machine-readable, For CI/CD 
 - 🌐 **HTML** — Dark theme, interactive filter/sort/search
-- 🔬 **SARIF** — GitHub Advanced Security ke saath integrate karo
-- 🏷️ **SVG Badges** — README mein quality score dikhao
+- 🔬 **SARIF** — integrate With GitHub Advanced Security 
+- 🏷️ **SVG Badges** — Show the quality score in the README
 
 #### CLI Commands
 
 ```bash
 Lyncus scan ./project              # Basic scan
-Lyncus scan . --output all         # Sab formats generate karo
-Lyncus scan . --only hardcode      # Sirf hardcoded values
+Lyncus scan . --output all         # All formats generate 
+Lyncus scan . --only hardcode      # Only hardcoded values
 Lyncus scan . --ci-mode            # CI/CD mode
-Lyncus doctor                      # Tools check karo
-Lyncus install-deps --lang python  # Missing tools install karo
-Lyncus init                        # Lyncus.toml banao
-Lyncus badge --score 87            # SVG badge generate karo
+Lyncus doctor                      # Tools check 
+Lyncus install-deps --lang python  # Missing tools install 
+Lyncus init                        # Lyncus.toml Create
+Lyncus badge --score 87            # SVG badge generate 
 ```
 
 Lyncus

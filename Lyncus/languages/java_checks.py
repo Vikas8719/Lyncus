@@ -5,10 +5,11 @@ Maven aur Gradle dono support karta hai. pom.xml ya build.gradle detect karke to
 
 from __future__ import annotations
 
-from defusedxml import ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from defusedxml import ElementTree as ET
 
 _PATH_ARGUMENT = "{path}"
 _POM_FILE = "pom.xml"
@@ -237,6 +238,7 @@ def parse_spotbugs_xml(xml_path: str) -> list[dict[str, Any]]:
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
+        assert root is not None
         for bug in root.findall(".//BugInstance"):
             bug_type    = bug.get("type", "")
             priority    = bug.get("priority", "2")  # SpotBugs: 1 high, 2 medium, 3 low
@@ -369,6 +371,7 @@ def parse_jacoco_xml(xml_path: str) -> dict[str, float | None]:
         root = tree.getroot()
 
         # Top-level counters
+        assert root is not None
         for counter in root.findall("counter"):
             ctype   = counter.get("type", "")
             missed  = int(counter.get("missed", "0"))

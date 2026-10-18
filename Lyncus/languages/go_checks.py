@@ -12,7 +12,7 @@ from typing import Any
 
 _ALL_PACKAGES = "./..."
 
-# Named constants — magic numbers nahi
+# Named constants
 _GOCOGNIT_COMPLEXITY_THRESHOLD = 15   # Cognitive complexity threshold (functions above this are flagged)
 _GOSEC_RSA_MIN_KEY_SIZE = 2048        # Minimum secure RSA key size in bits
 

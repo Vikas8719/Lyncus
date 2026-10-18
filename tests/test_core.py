@@ -1,6 +1,10 @@
 """
 Lyncus Tests — Phase 1 Core Engine
+Includes property-based tests with Hypothesis (1000 examples each).
 """
+
+from hypothesis import given, assume
+from hypothesis import strategies as st
 
 from Lyncus.core.detector import detect_language
 from Lyncus.rules.fake_test_rules import scan_file_for_fake_tests
@@ -228,3 +232,146 @@ class TestFakeTestRules:
             assert match.severity == "critical", (
                 f"Rule {match.rule_id} ki severity '{match.severity}' hai, 'critical' honi chahiye"
             )
+
+
+# ── PROPERTY-BASED TESTS (Hypothesis — 1000 examples each) ──────────────────
+
+
+class TestHardcodeRulesProperty:
+    """Hypothesis se random inputs ke saath hardcode scanner test karo."""
+
+    @given(st.text(min_size=0, max_size=500))
+    def test_scan_never_crashes(self, content: str) -> None:
+        """Koi bhi string input scan crash nahi karna chahiye."""
+        result = scan_file_for_hardcode("test.py", content)
+        assert isinstance(result, list)
+
+    @given(
+        file_path=st.text(
+            alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd"), whitelist_characters="/_-."),
+            min_size=1,
+            max_size=80,
+        ),
+        content=st.text(min_size=0, max_size=200),
+    )
+    def test_scan_file_path_preserved(self, file_path: str, content: str) -> None:
+        """Har match ka file field diya gaya file_path hona chahiye."""
+        results = scan_file_for_hardcode(file_path, content)
+        for match in results:
+            assert match.file == file_path
+
+    @given(st.text(min_size=0, max_size=300))
+    def test_scan_returns_valid_severities(self, content: str) -> None:
+        """Har match ki severity valid honi chahiye."""
+        valid = {"critical", "warning", "info"}
+        for match in scan_file_for_hardcode("f.py", content):
+            assert match.severity in valid, f"Invalid severity: {match.severity}"
+
+    @given(st.text(min_size=0, max_size=300))
+    def test_scan_line_numbers_positive(self, content: str) -> None:
+        """Har match ka line number >= 1 hona chahiye."""
+        for match in scan_file_for_hardcode("f.py", content):
+            assert match.line >= 1, f"Line number {match.line} < 1"
+
+    @given(st.text(min_size=0, max_size=300))
+    def test_scan_column_non_negative(self, content: str) -> None:
+        """Har match ka column number >= 0 hona chahiye."""
+        for match in scan_file_for_hardcode("f.py", content):
+            assert match.column >= 0, f"Column {match.column} < 0"
+
+    @given(st.text(min_size=0, max_size=300))
+    def test_scan_rule_id_non_empty(self, content: str) -> None:
+        """Har match ka rule_id non-empty hona chahiye."""
+        for match in scan_file_for_hardcode("f.py", content):
+            assert match.rule_id, "rule_id empty hai"
+
+    @given(st.text(min_size=0, max_size=300))
+    def test_scan_idempotent(self, content: str) -> None:
+        """Same content do baar scan karo — same results milne chahiye."""
+        r1 = scan_file_for_hardcode("f.py", content)
+        r2 = scan_file_for_hardcode("f.py", content)
+        assert [(m.rule_id, m.line, m.column) for m in r1] == [
+            (m.rule_id, m.line, m.column) for m in r2
+        ]
+
+    @given(
+        prefix=st.text(min_size=0, max_size=50),
+        suffix=st.text(min_size=0, max_size=50),
+    )
+    def test_credential_always_critical(self, prefix: str, suffix: str) -> None:
+        """Hardcoded password → sirf CREDENTIAL matches critical honi chahiye."""
+        content = f'{prefix}\npassword = "hardcoded_secret_123"\n{suffix}'
+        matches = scan_file_for_hardcode("f.py", content)
+        cred_matches = [m for m in matches if m.category == "CREDENTIAL"]
+        for m in cred_matches:
+            assert m.severity == "critical"
+
+    @given(st.integers(min_value=0, max_value=10000))
+    def test_blank_lines_dont_cause_match(self, n_blank: int) -> None:
+        """Sirf blank lines mein koi credential match nahi hona chahiye."""
+        content = "\n" * n_blank
+        matches = scan_file_for_hardcode("blank.py", content)
+        cred = [m for m in matches if m.category in ("CREDENTIAL", "DATABASE")]
+        assert cred == [], f"{len(cred)} credential matches on blank content"
+
+
+class TestFakeTestRulesProperty:
+    """Hypothesis se fake test scanner ko property-based test karo."""
+
+    @given(
+        content=st.text(min_size=0, max_size=400),
+        language=st.sampled_from(["python", "java", "javascript", "rust", "go", "kotlin"]),
+    )
+    def test_scan_never_crashes(self, content: str, language: str) -> None:
+        """Koi bhi language/content combination crash nahi karna chahiye."""
+        result = scan_file_for_fake_tests(content, language)
+        assert isinstance(result, list)
+
+    @given(
+        content=st.text(min_size=0, max_size=400),
+        language=st.sampled_from(["python", "java", "javascript", "rust", "go"]),
+    )
+    def test_all_matches_have_rule_id(self, content: str, language: str) -> None:
+        """Har match ka rule_id non-empty string hona chahiye."""
+        for match in scan_file_for_fake_tests(content, language):
+            assert isinstance(match.rule_id, str) and match.rule_id
+
+    @given(
+        content=st.text(min_size=0, max_size=400),
+        language=st.sampled_from(["python", "java", "javascript", "rust", "go"]),
+    )
+    def test_all_matches_have_valid_severity(self, content: str, language: str) -> None:
+        """Har match ki severity 'critical' | 'warning' | 'info' honi chahiye."""
+        valid = {"critical", "warning", "info"}
+        for match in scan_file_for_fake_tests(content, language):
+            assert match.severity in valid
+
+    @given(
+        content=st.text(min_size=0, max_size=400),
+        language=st.sampled_from(["python", "java", "javascript", "rust"]),
+    )
+    def test_line_numbers_positive(self, content: str, language: str) -> None:
+        """Har match ka line number >= 1 hona chahiye."""
+        for match in scan_file_for_fake_tests(content, language):
+            assert match.line >= 1
+
+    @given(
+        noise=st.text(min_size=0, max_size=100),
+    )
+    def test_assert_true_always_detected_in_python(self, noise: str) -> None:
+        """assert True python mein hamesha detect hona chahiye, chahe aage-peeche kuch bhi ho."""
+        assume("\n" not in noise or noise.count("\n") < 5)  # bahut zyada newlines avoid karo
+        content = f"{noise}\ndef test_x():\n    assert True\n{noise}"
+        matches = scan_file_for_fake_tests(content, "python")
+        ft001 = [m for m in matches if m.rule_id == "FT001"]
+        assert len(ft001) >= 1, f"FT001 nahi mila: {[m.rule_id for m in matches]}"
+
+    @given(
+        content=st.text(min_size=0, max_size=400),
+        language=st.sampled_from(["python", "java", "javascript", "rust", "go"]),
+    )
+    def test_scan_idempotent(self, content: str, language: str) -> None:
+        """Same input → same output hamesha."""
+        r1 = scan_file_for_fake_tests(content, language)
+        r2 = scan_file_for_fake_tests(content, language)
+        assert [(m.rule_id, m.line) for m in r1] == [(m.rule_id, m.line) for m in r2]

@@ -49,8 +49,6 @@ EXTENSION_MAP: dict[str, str] = {
     ".swift": "swift",
     # Dart
     ".dart": "dart",
-    # YAML (project configuration and workflow files)
-    ".yaml": "yaml", ".yml": "yaml",
 }
 
 # Config file → Language hint
@@ -77,7 +75,7 @@ IGNORE_DIRS: set[str] = {
     "venv", ".venv", "env", "node_modules", ".git",
     ".env", "dist", "build", "__pycache__", ".mypy_cache",
     ".ruff_cache", ".pytest_cache", ".hypothesis", ".cache", "cache",
-    "target", "bin", "obj", "vendor", "packages", ".gradle",
+    "target", "bin", "obj", "vendor", "packages", ".gradle", ".idea", ".vscode", ".vs", ".settings", ".metadata", ".xml", ".dockerignore",
 }
 
 
@@ -142,13 +140,7 @@ def _build_detection_result(file_counts: dict[str, int]) -> DetectionResult:
             confidence="low",
         )
 
-    # yaml/yml sirf config/CI files hain — ye actual source language nahi hain.
-    # Inhe detection se hata do warna C++/Python projects "yaml" detect ho jaate hain.
-    _NON_SOURCE_LANGUAGES = {"yaml"}
-    source_counts = {lang: cnt for lang, cnt in file_counts.items() if lang not in _NON_SOURCE_LANGUAGES}
-
-    # Agar sirf yaml files mili to full counts se detect karo (fallback)
-    effective_counts = source_counts if source_counts else file_counts
+    effective_counts = dict(file_counts)
 
     has_cuda = "cuda" in effective_counts
     if has_cuda and "cpp" not in effective_counts:
@@ -182,4 +174,5 @@ def _confidence_level(top_count: int, total_count: int) -> str:
 
 def get_supported_languages() -> list[str]:
     """Sab supported languages ki list."""
-    return sorted(set(EXTENSION_MAP.values()))
+    _NON_SOURCE = {"yaml"}
+    return sorted(set(EXTENSION_MAP.values()) - _NON_SOURCE)

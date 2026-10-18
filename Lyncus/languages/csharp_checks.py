@@ -27,7 +27,7 @@ class CSharpToolConfig:
     description: str
     min_version: str
     install_cmd: str
-    needs_build: bool = False    # dotnet build pehle chahiye
+    needs_build: bool = False    # dotnet build
 
 
 # ── C# TOOL DEFINITIONS ───────────────────────────────────────────────────────
@@ -128,13 +128,36 @@ CSHARP_TOOLS: list[CSharpToolConfig] = [
         min_version="0.8.10",
         install_cmd="dotnet tool install -g roslynator.dotnet.cli",
     ),
+
+    CSharpToolConfig(
+        name="semgrep",
+        command=[
+            "semgrep", "scan",
+            "--config", "p/csharp",
+            "--config", "p/secrets",
+            "--config", "p/owasp-top-ten",
+            "--json",
+            "--quiet",
+            _PATH_ARGUMENT,
+        ],
+        check_type="security",
+        output_format="json",
+        description="C# SAST — OWASP rules, hardcoded secrets, injection vulnerabilities",
+        min_version="1.0.0",
+        install_cmd=(
+            "# Linux/WSL: pip install semgrep\n"
+            "# macOS:     brew install semgrep\n"
+            "# Windows:   winget install --id Semgrep.Semgrep --exact --silent "
+            "--accept-package-agreements --accept-source-agreements"
+        ),
+    ),
 ]
 
 
 # ── DOTNET FORMAT JSON PARSER ─────────────────────────────────────────────────
 
 def parse_dotnet_format_json(json_output: str) -> list[dict[str, Any]]:
-    """dotnet format --report JSON output parse karo."""
+    """dotnet format --report JSON output parse ."""
     issues = []
 
     try:
@@ -161,7 +184,7 @@ def parse_dotnet_format_json(json_output: str) -> list[dict[str, Any]]:
 # ── DOTNET BUILD WARNINGS PARSER ──────────────────────────────────────────────
 
 def parse_dotnet_build_output(output: str) -> list[dict[str, Any]]:
-    """dotnet build output se warnings/errors parse karo."""
+    """dotnet build output to warnings/errors parse ."""
     return [
         issue
         for raw_line in output.splitlines()
@@ -232,7 +255,7 @@ def _cs_category(code: str) -> str:
 # ── STRYKER JSON PARSER ────────────────────────────────────────────────────────
 
 def parse_stryker_json(json_path: str) -> dict[str, Any]:
-    """Stryker mutation testing result parse karo."""
+    """Stryker mutation testing result parse ."""
     result: dict[str, Any] = {
         "mutation_score": None,
         "killed": 0,
@@ -287,7 +310,7 @@ def parse_stryker_json(json_path: str) -> dict[str, Any]:
 # ── COVERLET COBERTURA PARSER ─────────────────────────────────────────────────
 
 def parse_coverlet_xml(xml_path: str) -> dict[str, Any]:
-    """Coverlet Cobertura XML report parse karo."""
+    """Coverlet Cobertura XML report parse ."""
     result: dict[str, Any] = {
         "line_rate":   None,
         "branch_rate": None,
@@ -317,7 +340,7 @@ def parse_coverlet_xml(xml_path: str) -> dict[str, Any]:
 # ── ROSLYNATOR XML PARSER ──────────────────────────────────────────────────────
 
 def parse_roslynator_xml(xml_output: str) -> list[dict[str, Any]]:
-    """Roslynator XML analyze output parse karo."""
+    """Roslynator XML analyze output parse ."""
     issues = []
 
     try:
@@ -357,7 +380,7 @@ def is_csharp_file(file_path: str) -> bool:
 
 
 def find_csharp_files(project_path: str) -> list[str]:
-    """Project mein sab .cs files dhundo — generated code ignore karo."""
+    """ In Project .cs files Search — generated code ignore ."""
     path = Path(project_path)
     ignore_dirs = {"obj", "bin", "generated", ".vs", "packages", "node_modules"}
 
@@ -372,7 +395,7 @@ def find_csharp_files(project_path: str) -> list[str]:
 
 def detect_dotnet_project(project_path: str) -> dict[str, Any]:
     """
-    .NET project type detect karo.
+    .NET project type detect .
     Returns: {"type": "solution|project|none", "files": [...], "target_framework": str}
     """
     path = Path(project_path)
@@ -405,7 +428,7 @@ def detect_dotnet_project(project_path: str) -> dict[str, Any]:
 
 
 def _detect_framework(csproj_path: str) -> str:
-    """Target framework .csproj se nikalo."""
+    """Target framework .csproj in search."""
     try:
         tree = ET.parse(csproj_path)
         root = tree.getroot()

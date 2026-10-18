@@ -1,8 +1,15 @@
 from Lyncus.core import preview
+from Lyncus.core import platform as lyncus_platform
 
 
 def test_mutation_preview_skips_python_mutmut_on_windows(monkeypatch) -> None:
     monkeypatch.setattr(preview, "_check_python_pkg", lambda _package: True)
+    # mutmut ALWAYS_SKIP_MUTATION_TOOLS mein hai — platform check test ke liye temporarily hataao
+    monkeypatch.setattr(
+        lyncus_platform,
+        "ALWAYS_SKIP_MUTATION_TOOLS",
+        lyncus_platform.ALWAYS_SKIP_MUTATION_TOOLS - {"mutmut"},
+    )
 
     mutation = preview._build_mutation_info("python", "windows")
 
@@ -30,6 +37,12 @@ def test_mutation_preview_reports_unsupported_language() -> None:
 
 def test_mutation_preview_reports_windows_limit_and_wsl_hint(monkeypatch) -> None:
     monkeypatch.setattr(preview.shutil, "which", lambda _executable: None)
+    # go-mutesting ALWAYS_SKIP_MUTATION_TOOLS mein hai — platform check test ke liye temporarily hataao
+    monkeypatch.setattr(
+        lyncus_platform,
+        "ALWAYS_SKIP_MUTATION_TOOLS",
+        lyncus_platform.ALWAYS_SKIP_MUTATION_TOOLS - {"go-mutesting"},
+    )
 
     mutation = preview._build_mutation_info("go", "windows")
 

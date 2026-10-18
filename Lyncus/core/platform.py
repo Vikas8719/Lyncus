@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import platform as _platform
 
-
 # ── PLATFORM DETECTION ────────────────────────────────────────────────────────
 
 def current_os() -> str:
@@ -126,8 +125,8 @@ LINUX_NATIVE_TOOLS: frozenset[str] = frozenset({
     # Windows pe clang-cl ka sanitizer support limited hai
     "asan-cpp",
     "ubsan-cpp",
-    "msan-cpp",            # MemorySanitizer — uninitialized reads (valgrind replacement)
-    "tsan-cpp",            # ThreadSanitizer — data races
+    "msan-cpp",            # MemorySanitizer — uninitialized reads (Linux only; macOS partial)
+    "tsan-cpp",            # ThreadSanitizer — data races (Linux/macOS, Windows nahi)
     "compsan-cpp",         # ASan+UBSan combined
     # ── CUDA Sanitizers ────────────────────────────────────────────────────────
     "asan-cuda",
@@ -144,9 +143,23 @@ LINUX_NATIVE_TOOLS: frozenset[str] = frozenset({
 # Tools jo Windows pe natively nahi chalte (fork-based process model required)
 # CI pe theek hai (GitHub Actions linux runner), local Windows pe skip
 WINDOWS_INCOMPATIBLE_TOOLS: frozenset[str] = frozenset({
-    "mutmut",          # Python mutation — Windows pe slow/broken
     "mutant",          # Ruby mutation — POSIX fork required
     "go-mutesting",    # Go mutation — Unix fork required
+})
+
+# Mutation tools jo HAR platform pe permanently skip honge — bahut slow hain
+# aur fast analysis ke flow ko rok dete hain.
+# mutmut   → Python mutation testing — 60+ min, CI mein bhi impractical
+# pitest   → Java mutation — Maven build + full test suite = hours
+# infection → PHP mutation — composer + PHPUnit overhead
+# mutant   → Ruby mutation — extremely slow on all platforms
+# go-mutesting → Go mutation — slow + Linux-only
+ALWAYS_SKIP_MUTATION_TOOLS: frozenset[str] = frozenset({
+    "mutmut",          # Python — bahut slow, --skip-slow se bhi alag permanently off
+    "pitest",          # Java — Maven rebuild + full suite = too slow
+    "infection",       # PHP — composer + PHPUnit overhead = too slow
+    "mutant",          # Ruby — POSIX fork + slow on all platforms
+    "go-mutesting",    # Go — slow + Linux-only
 })
 
 # Tools jo macOS pe bhi sahi chalte hain (no restriction)
@@ -171,11 +184,16 @@ def should_skip_tool_on_platform(tool_name: str) -> tuple[bool, str]:
         (should_skip: bool, reason: str)
 
     Logic:
-        CI/CD mein: koi bhi tool skip mat karo (GitHub linux runner pe sab chalta hai)
+        ALWAYS_SKIP_MUTATION_TOOLS: har platform pe skip — bahut slow
+        CI/CD mein: koi bhi bacha hua tool skip mat karo (GitHub linux runner pe sab chalta hai)
         Linux local: koi bhi tool skip mat karo
         macOS local: sirf LINUX_NATIVE_TOOLS skip karo
         Windows local: LINUX_NATIVE_TOOLS + WINDOWS_INCOMPATIBLE_TOOLS skip karo
     """
+    # Permanently skip — har platform, har run mein (too slow for practical use)
+    if tool_name in ALWAYS_SKIP_MUTATION_TOOLS:
+        return True, f"{tool_name} permanently skipped — too slow for analysis (use --skip-slow=false is not enough)"
+
     os_name = current_os()
 
     # Native Windows limitations apply in local runs and on Windows CI alike.
@@ -193,10 +211,24 @@ def should_skip_tool_on_platform(tool_name: str) -> tuple[bool, str]:
     if os_name == "linux":
         return False, ""
 
-    # macOS — sirf Linux-native tools skip
+    # macOS — sirf Linux-native tools skip, lekin tsan-cpp aur compsan-cpp macOS pe bhi chalte hain
     if os_name == "macos":
-        if tool_name in LINUX_NATIVE_TOOLS:
+        # macOS pe ye sanitizers kaam karte hain (Apple LLVM support hai):
+        # tsan-cpp: macOS pe supported hai
+        # compsan-cpp: macOS pe supported hai (ASan+UBSan)
+        # asan-cpp, ubsan-cpp: macOS pe bhi kaam karte hain
+        # msan-cpp: macOS pe NAHI (MemorySanitizer Linux-only hai officially)
+        _MACOS_UNSUPPORTED = frozenset({"msan-cpp", "msan-rust", "msan-cuda", "asan-cuda", "ubsan-cuda"})
+        if tool_name in _MACOS_UNSUPPORTED:
             return True, f"{tool_name} requires Linux (not available on macOS)"
+        if tool_name in LINUX_NATIVE_TOOLS and tool_name not in _MACOS_UNSUPPORTED:
+            # asan-cpp, ubsan-cpp, tsan-cpp, compsan-cpp — macOS pe chalte hain
+            _MACOS_COMPATIBLE_SANITIZERS = frozenset({
+                "asan-cpp", "ubsan-cpp", "tsan-cpp", "compsan-cpp",
+                "cargo-tarpaulin",  # macOS pe bhi support hai recently
+            })
+            if tool_name not in _MACOS_COMPATIBLE_SANITIZERS:
+                return True, f"{tool_name} requires Linux (not available on macOS)"
         return False, ""
 
     # Windows local — Linux-native + Windows-incompatible tools skip

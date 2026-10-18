@@ -37,6 +37,10 @@ def test_collect_files_handles_single_file_extensions_and_ignored_dirs(tmp_path:
     for extension in SKIP_EXTENSIONS:
         (root / f"skip{extension}").write_text("x", encoding="utf-8")
     for dirname in SKIP_DIRS:
+        # Glob patterns (e.g. "*.egg-info") valid directory names nahi hain
+        # Windows pe — sirf literal directory names create karo
+        if "*" in dirname or "?" in dirname:
+            continue
         nested = root / dirname
         nested.mkdir()
         (nested / "hidden.py").write_text("pass", encoding="utf-8")

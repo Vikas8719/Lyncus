@@ -16,4 +16,7 @@ _ai_progress.json
 .hypothesis/
 .hypothesis_cache/
 .venv/
-coverage.json
+coverage.json/
+.pypirc
+venv-win/
+venv-linux/

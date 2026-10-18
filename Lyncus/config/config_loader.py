@@ -79,7 +79,7 @@ class ToolsConfig:
         "flawfinder": 180,  # Security scan — recursive
         "cppcheck":   300,  # Deep static analysis
         "clang-tidy": 600,  # Bahut slow — compile + analyze
-        "pytest-cov": 300,  # Full test suite + coverage
+        "pytest-cov": 600,  # Full test suite + coverage — large projects mein zyada time
     })
 
 
@@ -217,12 +217,18 @@ def _parse_config(raw: dict[str, Any]) -> LyncusConfig:
     )
 
     # [tools]
+    # IMPORTANT: timeouts ka default ToolsConfig mein define hai (pytest-cov=300 etc.)
+    # Agar TOML mein [tools.timeouts] nahi diya to default use karo — {} se override mat karo
     tools_raw = _get("tools")
+    _default_timeouts = ToolsConfig().timeouts  # default timeouts preserve karo
+    _custom_timeouts = tools_raw.get("timeouts", {})
+    # Merge: defaults ke upar user overrides
+    _merged_timeouts = {**_default_timeouts, **_custom_timeouts}
     cfg.tools = ToolsConfig(
         skip_unavailable=tools_raw.get("skip_unavailable", True),
         skip_slow=tools_raw.get("skip_slow", False),
         extra_args=tools_raw.get("extra_args", {}),
-        timeouts=tools_raw.get("timeouts", {}),
+        timeouts=_merged_timeouts,
     )
 
     # [report]
@@ -267,8 +273,8 @@ paths = [
   "venv/", ".venv/", "node_modules/", ".git/",
   "dist/", "build/", "__pycache__/", "target/",
 ]
-rules = []                  # Specific rule IDs ignore karo: ["HC001", "FT001"]
-files = []                  # Specific files ignore karo: ["migrations/*.py"]
+rules = []                  # Specific rule IDs ignore : ["HC001", "FT001"]
+files = []                  # Specific files ignore : ["migrations/*.py"]
 
 [hardcode]
 check_paths         = true  # /home/, C:\\Users jaise paths
@@ -279,8 +285,8 @@ check_todo          = true  # TODO, FIXME, HACK, XXX comments
 custom_patterns     = []    # Apne regex patterns add karo
 
 [tools]
-skip_unavailable = true     # Missing tools silently skip karo
-skip_slow        = false    # Slow tools (valgrind, stryker) skip karo
+skip_unavailable = true     # Missing tools silently skip
+skip_slow        = false    # Slow tools (valgrind, stryker) skip
 
 [report]
 html_file  = "Lyncus-report.html"

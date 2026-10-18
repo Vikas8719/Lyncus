@@ -418,8 +418,12 @@ def get_cpp_tools(
 
     Args:
         only: quality / security / complexity / memory
-        skip_slow: valgrind (bahut slow) skip karo
+        skip_slow: valgrind (bahut slow) skip karo — default True hi rakhna chahiye
         has_binary: compiled binary available hai (valgrind ke liye)
+
+    Note:
+        C++ ke liye koi mutation tool nahi hai abhi — mull aur andere tools
+        impractical hain (too slow / no stable tool). Skip by design.
     """
     tools = CPP_TOOLS.copy()
 

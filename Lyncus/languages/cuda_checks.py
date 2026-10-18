@@ -179,7 +179,7 @@ CUDA_TOOLS: list[CudaToolConfig] = [
 # ── COMPUTE-SANITIZER PARSER ──────────────────────────────────────────────────
 
 def parse_compute_sanitizer_output(output: str) -> list[dict[str, Any]]:
-    """compute-sanitizer text output parse karo."""
+    """compute-sanitizer text output parse ."""
     issues = []
 
     # Error pattern: ========= CUDA-MEMCHECK: Error at 0x... (file.cu:line)
@@ -232,7 +232,7 @@ def _sanitizer_severity(msg: str) -> str:
 # ── NVCC WARNINGS PARSER ──────────────────────────────────────────────────────
 
 def parse_nvcc_warnings(output: str) -> list[dict[str, Any]]:
-    """NVCC compiler output parse karo."""
+    """NVCC compiler output parse ."""
     return [
         issue
         for raw_line in output.splitlines()
@@ -275,7 +275,7 @@ def _nvcc_category(message: str) -> str:
 # ── NSIGHT SYSTEMS JSON PARSER ────────────────────────────────────────────────
 
 def parse_nsight_systems_json(json_path: str) -> list[dict[str, Any]]:
-    """nsys export JSON output parse karo — performance issues."""
+    """nsys export JSON output parse — performance issues."""
     issues = []
 
     try:
@@ -325,7 +325,7 @@ def parse_nsight_systems_json(json_path: str) -> list[dict[str, Any]]:
 # ── CLANG-TIDY CUDA PARSER ────────────────────────────────────────────────────
 
 def parse_clang_tidy_cuda_output(output: str) -> list[dict[str, Any]]:
-    """clang-tidy CUDA output parse karo (same format as C++)."""
+    """clang-tidy CUDA output parse (same format as C++)."""
     issues = []
     for raw_line in output.splitlines():
         before_check, separator, check = raw_line.rpartition(" [")
@@ -471,7 +471,7 @@ def find_cuda_files(project_path: str) -> list[str]:
 
 
 def has_cuda_toolkit() -> bool:
-    """CUDA toolkit available hai system pe?"""
+    """CUDA toolkit available in system ?"""
     import shutil
     return shutil.which("nvcc") is not None or shutil.which("compute-sanitizer") is not None
 

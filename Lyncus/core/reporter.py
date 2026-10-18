@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 console = Console()
 
-# Named score constants — magic number ban jaate the
+
 _SCORE_GREEN_THRESHOLD = 80   # score >= 80 → green
 _SCORE_YELLOW_THRESHOLD = 50  # score >= 50 → yellow
 _CRITICAL_PENALTY = 15        # score penalty per critical issue
@@ -142,7 +142,7 @@ def print_header(  # noqa: PLR0913
                 # Platform-incompatible — CI/CD pe chalega
                 console.print(
                     f"  [dim]⏭  {safe_tool} — {safe_reason} "
-                    f"(CI/CD pe automatically available)[/dim]"
+                    f"(automatically available in CI/CD)[/dim]"
                 )
             elif any(kw in reason_lower for kw in _NOT_INSTALLED_KEYWORDS) or not reason:
                 console.print(f"  [dim]⏭  {safe_tool} — {safe_reason}[/dim]")
@@ -173,47 +173,103 @@ def print_problems(problems: list[Problem], severity_filter: str = "all") -> Non
         )
         return
 
-    # Critical
+    # Critical — sab dikhao (actionable hain)
     if groups["critical"]:
         console.rule(f"[bold red]❌  CRITICAL PROBLEMS ({len(groups['critical'])})[/bold red]")
-        _print_group(groups["critical"])
+        _print_group(groups["critical"], limit=50)
 
-    # Warnings
+    # Warnings — file-grouped, limited
     if groups["warning"]:
         console.rule(f"[bold yellow]⚠️   WARNINGS ({len(groups['warning'])})[/bold yellow]")
-        _print_group(groups["warning"])
+        _print_group_by_file(groups["warning"], per_file_limit=5, total_limit=30)
 
-    # Info
+    # Info — sirf summary, details nahi
     if groups["info"]:
         console.rule(f"[bold blue]ℹ️   INFO ({len(groups['info'])})[/bold blue]")
-        _print_group(groups["info"])
+        _print_group(groups["info"], limit=20)
 
 
-def _print_group(problems: list[Problem]) -> None:
-    """Print all problems in a single severity group."""
-    for p in problems:
+def _print_group(problems: list[Problem], limit: int = 100) -> None:
+    """Print problems with an optional cap."""
+    shown = problems[:limit]
+    for p in shown:
         color = SEVERITY_COLORS.get(p.severity, "white")
         icon = SEVERITY_ICONS.get(p.severity, "•")
-
-        # Category badge
         category_text = Text(f"[{p.category:<10}]", style=f"bold {color}")
-        # File location
         location = f"{p.file}:{p.line}"
         if p.column:
             location += f":{p.column}"
-        # Message
         msg = p.message[:80]
-
         console.print(
             f"  {icon} ",
             category_text,
             f"[dim]{location:<40}[/dim]",
             f"[{color}]{msg}[/{color}]",
         )
-
-        # Suggestion agar hai
         if p.suggestion:
             console.print(f"     [dim]💡 {p.suggestion}[/dim]")
+
+    hidden = len(problems) - len(shown)
+    if hidden > 0:
+        console.print(
+            f"  [dim]... and {hidden} more problems — "
+            f"run [bold]Lyncus scan --output json[/bold] to see the full list[/dim]"
+        )
+    console.print()
+
+
+def _print_group_by_file(
+    problems: list[Problem],
+    per_file_limit: int = 5,
+    total_limit: int = 30,
+) -> None:
+    """Warnings ko file ke hisaab se group karke print karo — noisy output avoid karo."""
+    # File ke hisaab se group karo
+    by_file: dict[str, list[Problem]] = {}
+    for p in problems:
+        by_file.setdefault(p.file, []).append(p)
+
+    shown_total = 0
+
+    for files_shown, (file_path, file_problems) in enumerate(sorted(by_file.items())):
+        if shown_total >= total_limit:
+            remaining_files = len(by_file) - files_shown
+            remaining_issues = len(problems) - shown_total
+            console.print(
+                f"  [dim]... and {remaining_issues} more warnings across "
+                f"{remaining_files} files — run [bold]Lyncus scan --output json[/bold] "
+                f"to see the full list[/dim]"
+            )
+            break
+
+        color = SEVERITY_COLORS.get(file_problems[0].severity, "white")
+        icon = SEVERITY_ICONS.get(file_problems[0].severity, "•")
+        safe_file = rich_escape(file_path)
+
+        # File header — total count ke sath
+        hidden_in_file = max(0, len(file_problems) - per_file_limit)
+        file_label = f"{safe_file} ({len(file_problems)} issues)"
+        console.print(f"\n  [dim bold]{file_label}[/dim bold]")
+
+        # Per-file limited problems
+        for p in file_problems[:per_file_limit]:
+            category_text = Text(f"[{p.category:<10}]", style=f"bold {color}")
+            location = f":{p.line}"
+            if p.column:
+                location += f":{p.column}"
+            msg = p.message[:80]
+            console.print(
+                f"    {icon} ",
+                category_text,
+                f"[dim]{location:<15}[/dim]",
+                f"[{color}]{msg}[/{color}]",
+            )
+            shown_total += 1
+
+        if hidden_in_file > 0:
+            console.print(
+                f"    [dim]... and {hidden_in_file} more in this file[/dim]"
+            )
 
     console.print()
 

@@ -14,14 +14,18 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from Lyncus.core.platform import (
     LINUX_NATIVE_TOOLS as _LINUX_NATIVE_TOOLS,
-    should_skip_tool_on_platform,
-    is_ci,
-    current_os,
 )
+from Lyncus.core.platform import (
+    is_ci,
+    should_skip_tool_on_platform,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @dataclass
@@ -50,8 +54,41 @@ class ToolConfig:
 
 @dataclass(frozen=True)
 class ToolRunOptions:
-    timeout_seconds: int = 120
+    timeout_seconds: int = 300  # 5 min default — WSL/network filesystems slow hote hain
     tool_timeouts: dict[str, int] | None = None
+
+
+
+_DEFAULT_TOOL_TIMEOUTS: dict[str, int] = {
+    "ruff":       300,
+    "bandit":     300,
+    "vulture":    300,
+    # Type checkers — first run pe stubs download + cache build hota hai
+    "mypy":       600,
+    # Complexity — bade codebase pe slow
+    "radon":      300,
+    # Dependency audit — network call bhi kar sakta hai
+    "pip-audit":  300,
+    # Coverage + tests — slowest legitimate tools
+    "pytest-cov": 900,   # 15 min — full test suite + 1000 examples per hypothesis test
+    # Property testing — fast tools, bounded by max_success
+    # Hypothesis: pytest-cov ke andar chalta hai, alag timeout nahi
+    "rapidcheck":      120,   # 1000 examples, < 2 min expected
+    "rapidcheck-cuda": 120,
+    # Mutation testing — jo abhi bhi run hote hain (fast/cross-platform)
+    "cargo-mutants":  3600,  # Rust mutation — fast lekin bade projects pe slow
+    "stryker":        1800,  # C# mutation
+    "stryker-js":     1800,  # JS mutation
+    "stryker-ts":     1800,  # TS mutation
+    # Semgrep — pehli run pe rules download karta hai, WSL pe slow filesystem
+    "semgrep":        300,   # 5 min — zyada ho to timeout, cache ke baad fast
+    # Coverage tools
+    "cargo-tarpaulin": 600,
+    # Dart / Flutter — pehli run pe pub get + package resolution hoti hai
+    # Flutter analyze especially slow hota hai fresh project pe (SDK warm-up ~2min)
+    "dart-analyze":   600,   # 10 min — pub resolution + first-run SDK cache
+    "flutter-analyze": 600,  # 10 min — Flutter SDK warm-up + pub get
+}
 
 
 _PATH_ARGUMENT = "{path}"
@@ -65,11 +102,20 @@ _CHUNK_READ_BYTES = _CHUNK_READ_KB * 1024
 _OUTPUT_TRUNCATION_MARKER = b"\n...[output truncated]...\n"
 _VULTURE_MIN_CONFIDENCE = 70  # Vulture dead code min confidence %
 _HYPOTHESIS_MAX_EXAMPLES = 1000  # Property testing example count
-_RAPIDCHECK_MAX_SUCCESS = 1000  # RapidCheck successful cases per property
+_RAPIDCHECK_MAX_SUCCESS = 1000  # RapidCheck successful examples count
 _PYTHON_SCAN_EXCLUDES = (
-    ".venv,venv,env,node_modules,.git,dist,build,__pycache__,*.egg-info,"
+    ".venv,venv,venv-win,venv-linux,venv-mac,env,node_modules,.git,dist,build,__pycache__,*.egg-info,"
     ".mypy_cache,.pytest_cache,.ruff_cache,.hypothesis,.cache,cache,target,"
-    "bin,obj,vendor,packages,.gradle"
+    "bin,obj,vendor,packages,.gradle,htmlcov,coverage,reports,.tox,.nox,"
+    ".eggs,migrations,fixtures,static,media"
+)
+
+# mypy --exclude regex pattern (same dirs, regex format)
+_MYPY_EXCLUDE_PATTERN = (
+    r"(\.venv|venv|venv-win|venv-linux|venv-mac|env|\.git|dist|build|__pycache__|\.mypy_cache|\.pytest_cache"
+    r"|\.ruff_cache|\.hypothesis|\.cache|cache|target|bin|obj|vendor|packages"
+    r"|\.gradle|htmlcov|coverage|reports|\.tox|\.nox|\.eggs|migrations"
+    r"|node_modules|.*\.egg-info)"
 )
 
 
@@ -81,7 +127,12 @@ TOOL_REGISTRY: list[ToolConfig] = [
     # ── PYTHON ────────────────────────────────────────────────────────────────
     ToolConfig(
         "ruff",
-        ["ruff", "check", _PATH_ARGUMENT, "--output-format", "text", "--no-cache"],
+        [
+            "ruff", "check", _PATH_ARGUMENT,
+            "--output-format", "text",
+            "--no-cache",
+            "--exclude", _PYTHON_SCAN_EXCLUDES,
+        ],
         "python",
         "quality",
         description="Fast Python linter",
@@ -95,6 +146,7 @@ TOOL_REGISTRY: list[ToolConfig] = [
             "--ignore-missing-imports",
             "--no-error-summary",
             "--show-column-numbers",
+            "--exclude", _MYPY_EXCLUDE_PATTERN,
         ],
         "python",
         "quality",
@@ -108,17 +160,14 @@ TOOL_REGISTRY: list[ToolConfig] = [
         "security",
         description="Security scanner",
         install_cmd="pip install bandit",
-    ),
-    ToolConfig(
+    ),    ToolConfig(
         "vulture",
         [
             "vulture",
             _PATH_ARGUMENT,
             "--min-confidence", str(_VULTURE_MIN_CONFIDENCE),
-            # .venv, site-packages aur dusre non-project dirs exclude karo
-            # Vulture --exclude comma-separated glob patterns leta hai
             "--exclude",
-            ".venv,venv,env,.git,dist,build,__pycache__,*.egg-info,node_modules",
+            _PYTHON_SCAN_EXCLUDES,
         ],
         "python",
         "deadcode",
@@ -127,7 +176,10 @@ TOOL_REGISTRY: list[ToolConfig] = [
     ),
     ToolConfig(
         "radon",
-        ["radon", "cc", _PATH_ARGUMENT, "-s", "-a", "-nb"],
+        [
+            "radon", "cc", _PATH_ARGUMENT, "-s", "-a", "-nb",
+            "--exclude", _PYTHON_SCAN_EXCLUDES,
+        ],
         "python",
         "complexity",
         description="Complexity analyzer",
@@ -152,13 +204,15 @@ TOOL_REGISTRY: list[ToolConfig] = [
     ),
     ToolConfig(
         "mutmut",
-        ["python", "-m", "Lyncus.core.mutmut_runner"],
+        [sys.executable, "-m", "Lyncus.core.mutmut_runner"],
         "python",
         "faketests",
         description="Mutation testing",
         install_cmd="pip install 'mutmut>=3.0,<4'",
     ),
     # ✅ Fix #11: pytest-cov registry mein add karo — Python coverage missing tha
+    # Hypothesis bhi yahi se run hota hai — 1000 examples via hypothesis_profile plugin.
+    # LYNCUS_HYPOTHESIS_MAX_EXAMPLES=1000 env se examples count control hota hai.
     ToolConfig(
         "pytest-cov",
         [
@@ -166,21 +220,30 @@ TOOL_REGISTRY: list[ToolConfig] = [
             "-m",
             "pytest",
             "-p",
-            "Lyncus.core.hypothesis_profile",
+            "Lyncus.core.hypothesis_profile",   # 1000-example profile load karo
             f"--cov={_PATH_ARGUMENT}",
             "--cov-branch",
             "--cov-report=term-missing",
             "--cov-report=json",
             "-q",
+            "--tb=short",                        # Hypothesis failure tracebacks short rakho
+            "--ignore=.venv",
+            "--ignore=venv",
+            "--ignore=env",
+            "--ignore=dist",
+            "--ignore=build",
+            "--ignore=htmlcov",
+            "--ignore=migrations",
         ],
         "python",
         "coverage",
-        description="Python branch coverage (pytest-cov)",
+        description="Python branch coverage + Hypothesis (1000 examples/test)",
         install_cmd="pip install pytest-cov hypothesis",
     ),
     # hypothesis — property-based testing (Python)
-    # Pytest plugin ke roop mein kaam karta hai — pytest-cov ke sath chalata hai
-    # check_tool_available() mein importlib se check hoga (shutil.which nahi)
+    # pytest-cov ke saath automatically run hota hai via hypothesis_profile plugin.
+    # Standalone command nahi — display + availability tracking ke liye sirf.
+    # 1000 examples per test: LYNCUS_HYPOTHESIS_MAX_EXAMPLES env se control hota hai.
     ToolConfig(
         "hypothesis",
         [],          # pytest-cov ke sath hi chalata hai — standalone command nahi
@@ -444,11 +507,86 @@ TOOL_REGISTRY: list[ToolConfig] = [
     ),
     ToolConfig(
         "cpplint",
-        ["cpplint", "--recursive", "--filter=-build/include_subdir,-legal/copyright", _PATH_ARGUMENT],
+        [
+            "cpplint",
+            "--recursive",
+            "--filter=-build/include_subdir,-legal/copyright",
+            "--exclude=build",
+            "--exclude=build/vcpkg_installed",
+            "--exclude=vcpkg_installed",
+            "--exclude=third_party",
+            "--exclude=extern",
+            "--exclude=external",
+            "--exclude=vendor",
+            "--exclude=deps",
+            "--exclude=.cache",
+            _PATH_ARGUMENT,
+        ],
         "cpp",
         "quality",
         description="Google C++ style checker",
         install_cmd="pip install cpplint",
+    ),
+    # ── RAPIDCHECK — C++ property-based testing ───────────────────────────────
+    # Header-only library. Lyncus auto-runner banata hai agar header milta hai.
+    # RC_PARAMS env se examples count control hota hai: max_success=1000
+    # check_tool_available() mein header detection + auto-runner file check hota hai.
+    ToolConfig(
+        "rapidcheck",
+        [
+            "bash", "-c",
+            (
+                "rc_src={path} && rc_out={tmpdir}/rc_runner_bin && "
+                "# Pehle lyncus_rapidcheck_runner.cpp dhundo (auto-generated) \n"
+                "rc_runner=$(find \"$(dirname \"$rc_src\")\" -maxdepth 2 "
+                "-name 'lyncus_rapidcheck_runner.cpp' 2>/dev/null | head -1) && "
+                "if [ -z \"$rc_runner\" ]; then "
+                "  echo '[LYNCUS] RapidCheck runner not found — auto-create needed'; exit 0; "
+                "fi && "
+                "clang++ -std=c++17 -I\"$(dirname \"$rc_runner\")\" "
+                "-I/usr/local/include -I/usr/include "
+                "\"$rc_runner\" -o \"$rc_out\" -lrapidcheck 2>&1 && "
+                "RC_PARAMS=\"max_success=1000\" \"$rc_out\" 2>&1 || "
+                "echo '[LYNCUS] RapidCheck: link failed — rapidcheck library not found'"
+            ).replace("{path}", _PATH_ARGUMENT),
+        ],
+        "cpp",
+        "property",
+        description="Property-based testing — 1000 random examples per property (header-only)",
+        install_cmd=(
+            "vcpkg install rapidcheck / "
+            "conan install rapidcheck/cci.20220327 / "
+            "apt-get install -y librapidcheck-dev / "
+            "brew install rapidcheck"
+        ),
+    ),
+    # RapidCheck for CUDA — same runner, CUDA project context mein
+    ToolConfig(
+        "rapidcheck-cuda",
+        [
+            "bash", "-c",
+            (
+                "rc_src={path} && rc_out={tmpdir}/rc_cuda_runner_bin && "
+                "rc_runner=$(find \"$(dirname \"$rc_src\")\" -maxdepth 2 "
+                "-name 'lyncus_rapidcheck_runner.cpp' 2>/dev/null | head -1) && "
+                "if [ -z \"$rc_runner\" ]; then "
+                "  echo '[LYNCUS] RapidCheck runner not found — auto-create needed'; exit 0; "
+                "fi && "
+                "clang++ -std=c++17 -I\"$(dirname \"$rc_runner\")\" "
+                "-I/usr/local/include -I/usr/include "
+                "\"$rc_runner\" -o \"$rc_out\" -lrapidcheck 2>&1 && "
+                "RC_PARAMS=\"max_success=1000\" \"$rc_out\" 2>&1 || "
+                "echo '[LYNCUS] RapidCheck: link failed — rapidcheck library not found'"
+            ).replace("{path}", _PATH_ARGUMENT),
+        ],
+        "cuda",
+        "property",
+        description="Property-based testing for CUDA host code — 1000 examples",
+        install_cmd=(
+            "vcpkg install rapidcheck / "
+            "apt-get install -y librapidcheck-dev / "
+            "brew install rapidcheck"
+        ),
     ),
     ToolConfig(
         "valgrind",
@@ -735,12 +873,46 @@ TOOL_REGISTRY: list[ToolConfig] = [
         install_cmd="dotnet tool install -g security-scan",
     ),
     ToolConfig(
+        "roslynator",
+        [
+            "roslynator", "analyze",
+            _PATH_ARGUMENT,
+            "--output", "{tmpdir}/roslynator_out.xml",
+            "--format", "xml",
+        ],
+        "csharp",
+        "quality",
+        description="Roslyn-based analyzer — 500+ code quality rules",
+        install_cmd="dotnet tool install -g roslynator.dotnet.cli",
+    ),
+    ToolConfig(
         "stryker",
         ["dotnet", "stryker", "--reporter", "json"],
         "csharp",
         "faketests",
         description="C# mutation testing",
         install_cmd="dotnet tool install -g dotnet-stryker",
+    ),
+    ToolConfig(
+        "semgrep",
+        [
+            "semgrep", "scan",
+            "--config", "p/csharp",
+            "--config", "p/secrets",
+            "--config", "p/owasp-top-ten",
+            "--json",
+            "--quiet",
+            _PATH_ARGUMENT,
+        ],
+        "csharp",
+        "security",
+        description="C# SAST — OWASP rules, hardcoded secrets, injection vulnerabilities",
+        install_cmd=(
+            "pip install semgrep / "
+            "brew install semgrep / "
+            "winget install --id Semgrep.Semgrep --exact --silent "
+            "--accept-package-agreements --accept-source-agreements"
+        ),
     ),
     # ── JAVA ──────────────────────────────────────────────────────────────────
     ToolConfig(
@@ -934,7 +1106,8 @@ TOOL_REGISTRY: list[ToolConfig] = [
 
 
 _TEST_SCAN_IGNORES = {
-    ".git", ".venv", "venv", "env", "node_modules", "build", "dist",
+    ".git", ".venv", "venv", "venv-win", "venv-linux", "venv-mac", "env",
+    "node_modules", "build", "dist",
     "target", "bin", "obj", "vendor", "packages", ".gradle", ".cache",
     "cache", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     ".hypothesis",
@@ -1000,9 +1173,8 @@ def _project_test_tool(language: str, project_path: str) -> ToolConfig | None:
     if language == "python" and _project_test_files(root, language):
         return next(tool for tool in TOOL_REGISTRY if tool.name == "pytest-cov")
 
-    if language in {"cpp", "cuda"}:
-        if _find_ctest_build_dir(root):
-            return _ctest_tool(language)
+    if language in {"cpp", "cuda"} and _find_ctest_build_dir(root):
+        return _ctest_tool(language)
 
     test_command = _native_test_command(language, root)
     if not test_command:
@@ -1220,6 +1392,10 @@ def _find_csproj_root(path: str) -> str | None:
 
 # Tool name → actual executable mapping
 _EXECUTABLE_MAP: dict[str, str] = {
+    # Python tools — mutmut PATH mein nahi aata pip install ke baad same process mein
+    # check_tool_available mein importlib fallback handle karta hai inhe
+    # (yahan sirf woh tools jinke liye executable name alag hai)
+    "mutmut": "mutmut",   # importlib fallback check_tool_available mein hai
     # Rust
     "cargo-clippy":   "cargo",
     "cargo-audit":    "cargo",
@@ -1235,6 +1411,7 @@ _EXECUTABLE_MAP: dict[str, str] = {
     "dotnet-build":   "dotnet",
     "dotnet-format":  "dotnet",
     "roslyn-analyzer":"dotnet",
+    "roslynator":     "roslynator",   # dotnet tool install -g roslynator.dotnet.cli
     "stryker":        "dotnet",
     "security-scan":  "dotnet",
     "dotnet-stryker": "dotnet-stryker",
@@ -1256,9 +1433,11 @@ _EXECUTABLE_MAP: dict[str, str] = {
     "valgrind-cuda":  "valgrind",
     # Java/Kotlin
     "pitest":         "mvn",
-    # Dart
-    "dart-analyze":   "dart",
-    "flutter-analyze":"flutter",
+    # Dart — NOTE: dart-analyze / flutter-analyze / dart-tests ke liye
+    # _EXECUTABLE_MAP use NAHI hota; woh check_tool_available mein
+    # _DART_FLUTTER_TOOLS → _check_dart_flutter_executable se handle hote hain.
+    # Yahan entry nahi rakhi taaki _EXECUTABLE_MAP fallback galat shutil.which
+    # se True return na kare jab dart PATH mein nahi hota.
     # ── Sanitizers ── bash script ke andar clang++ call hota hai
     # check_tool_available "bash" ko check karega — jo always available hai on Linux
     # isliye real check clang++ pe map karo
@@ -1276,6 +1455,10 @@ _EXECUTABLE_MAP: dict[str, str] = {
     "ubsan-rust":        "rustup",
     "msan-rust":         "rustup",
     "compsan-rust":      "rustup",
+    # RapidCheck — bash runner, clang++ se compile karta hai
+    # check_tool_available mein special header-detection logic hai
+    "rapidcheck":        "clang++",
+    "rapidcheck-cuda":   "clang++",
 }
 
 # Tools jo sirf Linux pe natively kaam karte hain — platform.py se import kiya
@@ -1289,12 +1472,174 @@ def _is_linux_platform() -> bool:
     return platform.system().lower() == "linux"
 
 
+def _which_in_venv(executable: str) -> str | None:
+    """
+    shutil.which() ka extended version — system PATH ke saath-saath
+    active venv, Scripts/bin, aur Linux user-local paths bhi check karta hai.
+
+    Windows pe pip install ke baad tool .venv\\Scripts\\ mein jaata hai
+    lekin shutil.which() PATH-only check karta hai — isliye tools skip ho jaate the.
+
+    WSL/Linux pe pip install --user ke baad tool ~/.local/bin/ mein jaata hai
+    jo kabhi kabhi PATH mein nahi hota — isliye explicitly check karo.
+    """
+    import platform as _plat
+
+    # 1. Standard PATH check (sabse pehle — fastest)
+    found = shutil.which(executable)
+    if found:
+        return found
+
+    # 2. Current venv Scripts / bin check (VIRTUAL_ENV ya sys.prefix se)
+    venv_root = os.environ.get("VIRTUAL_ENV") or sys.prefix
+    candidates: list[Path] = [
+        Path(venv_root) / "Scripts" / executable,          # Windows venv
+        Path(venv_root) / "Scripts" / f"{executable}.exe", # Windows venv .exe
+        Path(venv_root) / "bin" / executable,              # Linux/macOS venv
+    ]
+
+    # 3. sys.executable ke directory mein bhi check karo
+    # (pip install ke baad same venv/Scripts ya bin mein rehta hai)
+    local_scripts = Path(sys.executable).parent
+    candidates += [
+        local_scripts / executable,
+        local_scripts / f"{executable}.exe",
+    ]
+
+    # 4. Linux / WSL — pip install --user → ~/.local/bin/
+    #    Yeh PATH mein ho bhi sakta hai ya nahi bhi — explicitly check karo
+    if _plat.system().lower() in ("linux", "darwin"):
+        home = Path.home()
+        candidates += [
+            home / ".local" / "bin" / executable,
+        ]
+
+    # 5. WSL mein system-level pip install → /usr/local/bin/ ya /usr/bin/
+    #    shutil.which() PATH se miss kar sakta hai agar PATH incomplete ho
+    if _plat.system().lower() == "linux":
+        candidates += [
+            Path("/usr/local/bin") / executable,
+            Path("/usr/bin") / executable,
+        ]
+
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return None
+
+
+def _dotnet_global_tools_path() -> list[Path]:
+    """
+    dotnet global tools install directory dhundo — sab platforms ke liye.
+
+    Windows:        %USERPROFILE%\\.dotnet\\tools\\
+    Linux / WSL:    ~/.dotnet/tools/
+    macOS:          ~/.dotnet/tools/
+    Custom DOTNET_ROOT env se bhi override ho sakta hai.
+
+    `dotnet tool install -g` ke baad executable yahan jaata hai.
+    Yeh directory PATH mein NAHI hoti by default on fresh Linux/macOS installs
+    jab tak user ne ~/.bashrc / ~/.zshrc mein add nahi kiya — isliye
+    shutil.which() miss karta hai even though tool installed hai.
+    """
+    candidates: list[Path] = []
+
+    # 1. DOTNET_ROOT env override (custom dotnet install location)
+    dotnet_root = os.environ.get("DOTNET_ROOT", "")
+    if dotnet_root:
+        candidates.append(Path(dotnet_root) / "tools")
+
+    # 2. Standard user-level dotnet tools path (all platforms)
+    home = Path.home()
+    candidates.append(home / ".dotnet" / "tools")
+
+    # 3. Windows: %USERPROFILE%\.dotnet\tools (explicit, same as home usually)
+    userprofile = os.environ.get("USERPROFILE", "")
+    if userprofile:
+        candidates.append(Path(userprofile) / ".dotnet" / "tools")
+
+    # 4. Linux/macOS snap-installed dotnet → /snap/dotnet-sdk/.../tools
+    #    (rare, but some Ubuntu users install via snap)
+    snap_dotnet = Path("/snap/dotnet-sdk/current/tools")
+    if snap_dotnet.exists():
+        candidates.append(snap_dotnet)
+
+    return [p for p in candidates if p.is_dir()]
+
+
+def _check_dotnet_global_tool(tool_name: str, package_id: str) -> bool:
+    """
+    dotnet global tool availability check — 3-layer strategy:
+
+    Layer 1: shutil.which() — PATH mein directly milta hai (best case)
+    Layer 2: ~/.dotnet/tools/ direct file check — PATH mein nahi lekin installed hai
+             (Linux/WSL/macOS pe common — user ne PATH update nahi kiya)
+    Layer 3: dotnet tool list --global — definitive check (slow ~0.5s, last resort)
+
+    Layer 2 WSL pe kyun important hai:
+    - `dotnet tool install -g roslynator.dotnet.cli` → ~/.dotnet/tools/roslynator
+    - Agar ~/.bashrc mein `export PATH=$PATH:~/.dotnet/tools` nahi hai →
+      shutil.which("roslynator") → None, even though binary exists
+    - Same on macOS with zsh (default shell since Catalina)
+    """
+    import platform as _plat
+
+    # Layer 1: Standard PATH check
+    if shutil.which(tool_name) is not None:
+        return True
+
+    # Layer 2: Direct file check in known dotnet tools directories
+    exe_name = f"{tool_name}.exe" if _plat.system().lower() == "windows" else tool_name
+    for tools_dir in _dotnet_global_tools_path():
+        candidate = tools_dir / exe_name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return True
+        # Windows: .exe extension
+        candidate_exe = tools_dir / f"{tool_name}.exe"
+        if candidate_exe.is_file():
+            return True
+
+    # Layer 3: dotnet tool list --global (definitive but slow ~0.5s)
+    # Only reach here if layers 1+2 both missed
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["dotnet", "tool", "list", "--global"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return package_id.lower() in result.stdout.lower()
+    except Exception:
+        return False
+
+
+def _check_roslynator_available() -> bool:
+    """
+    roslynator availability — 3-layer detection (PATH → ~/.dotnet/tools/ → dotnet tool list).
+
+    WSL/Linux pe dotnet tool install -g ke baad ~/.dotnet/tools/ mein jaata hai
+    lekin PATH mein nahi hota jab tak user ne ~/.bashrc mein add nahi kiya.
+    macOS pe zsh default shell hai aur same issue — ~/.zshrc update nahi hoti automatically.
+    Windows pe PATH automatically update hoti hai installer se.
+    """
+    return _check_dotnet_global_tool("roslynator", "roslynator.dotnet.cli")
+
+
 def check_tool_available(tool_name: str) -> bool:
     """Check karo ki tool system pe installed hai ya nahi."""
+    # ── dotnet global tools — 3-layer detection (PATH → ~/.dotnet/tools/ → dotnet tool list) ──
+    # WSL/Linux + macOS pe PATH automatically update nahi hoti after `dotnet tool install -g`
+    # isliye shutil.which() alone fail karta hai even when tool is installed.
+    _DOTNET_GLOBAL_TOOLS: dict[str, str] = {
+        "roslynator":    "roslynator.dotnet.cli",
+        "security-scan": "security-scan",
+        "dotnet-stryker":"dotnet-stryker",
+    }
+    if tool_name in _DOTNET_GLOBAL_TOOLS:
+        return _check_dotnet_global_tool(tool_name, _DOTNET_GLOBAL_TOOLS[tool_name])
     if tool_name == "pytest-cov":
         try:
             from importlib.util import find_spec
-
             return find_spec("pytest") is not None and find_spec("pytest_cov") is not None
         except (ImportError, ValueError):
             return False
@@ -1304,6 +1649,78 @@ def check_tool_available(tool_name: str) -> bool:
             return find_spec("hypothesis") is not None
         except (ImportError, ValueError):
             return False
+    # RapidCheck — clang++ available hona chahiye (compile ke liye)
+    # Header existence project-specific hai — preview.py ke _find_rapidcheck_header
+    # se check hota hai. Yahan sirf clang++ compiler check karo.
+    if tool_name in {"rapidcheck", "rapidcheck-cuda"}:
+        return shutil.which("clang++") is not None    # mutmut: shutil.which miss kar sakta hai Windows pe (.venv\Scripts\ PATH mein nahi hota)
+    # Fix: _which_in_venv + importlib double-check
+    if tool_name == "mutmut":
+        if _which_in_venv("mutmut") is not None:
+            return True
+        try:
+            from importlib.util import find_spec
+            return find_spec("mutmut") is not None
+        except (ImportError, ValueError):
+            return False
+    # pip-installed CLI tools jo Windows pe sirf venv/Scripts mein hote hain
+    # (ruff, mypy, bandit, vulture, radon, pip-audit) — _which_in_venv use karo
+    _PIP_CLI_TOOLS = {
+        "ruff", "mypy", "bandit", "vulture", "radon", "pip-audit",
+        "flawfinder", "lizard", "cpplint", "semgrep",
+    }
+    if tool_name in _PIP_CLI_TOOLS:
+        return _which_in_venv(tool_name) is not None
+
+    # C++ system tools — Windows pe common install paths bhi check karo
+    # cppcheck: C:\Program Files\Cppcheck\cppcheck.exe
+    # clang-tidy: C:\Program Files\LLVM\bin\clang-tidy.exe
+    # clang++: C:\Program Files\LLVM\bin\clang++.exe (asan/ubsan/compsan ke liye)
+    _CPP_SYSTEM_TOOLS: dict[str, list[str]] = {
+        "cppcheck": [
+            r"C:\Program Files\Cppcheck\cppcheck.exe",
+            r"C:\Program Files (x86)\Cppcheck\cppcheck.exe",
+        ],
+        "clang-tidy": [
+            r"C:\Program Files\LLVM\bin\clang-tidy.exe",
+            r"C:\Program Files (x86)\LLVM\bin\clang-tidy.exe",
+        ],
+        "clang++": [
+            r"C:\Program Files\LLVM\bin\clang++.exe",
+            r"C:\Program Files (x86)\LLVM\bin\clang++.exe",
+            # MSYS2 / MinGW paths
+            r"C:\msys64\mingw64\bin\clang++.exe",
+            r"C:\msys64\ucrt64\bin\clang++.exe",
+        ],
+    }
+    if tool_name in _CPP_SYSTEM_TOOLS:
+        # Pehle PATH mein dhundo
+        if shutil.which(tool_name):
+            return True
+        # Phir Windows common install paths check karo
+        import platform as _plat
+        if _plat.system().lower() == "windows":
+            for path in _CPP_SYSTEM_TOOLS[tool_name]:
+                if Path(path).is_file():
+                    return True
+        return False
+    # ── Dart / Flutter — Windows + macOS + Linux special path detection ──────
+    # Windows pe Flutter SDK typically C:\Users\<user>\flutter\bin\ mein hota hai
+    # ya choco/winget install kare toh C:\tools\flutter\bin\ mein.
+    # macOS pe brew install flutter → /opt/homebrew/bin/ ya /usr/local/bin/
+    # Linux pe snap install flutter → /snap/bin/ ya ~/.local/share/flutter/bin/
+    # dart.exe aur flutter.exe PATH mein nahi hoti agar user ne manually add nahi kiya.
+    _DART_FLUTTER_TOOLS = {"dart-analyze", "flutter-analyze", "dart-tests"}
+    if tool_name in _DART_FLUTTER_TOOLS:
+        # Konsa executable chahiye
+        exe = "flutter" if tool_name == "flutter-analyze" else "dart"
+        found = _check_dart_flutter_executable(exe)
+        if not found:
+            # Friendly skip reason ke liye False return karo —
+            # verbose output mein "Executable not found" dikhega
+            return False
+        return True
+
     if tool_name.endswith("-tests"):
         test_executables = {
             "rust-tests": "cargo",
@@ -1319,9 +1736,117 @@ def check_tool_available(tool_name: str) -> bool:
             "dart-tests": "dart",
         }
         executable = test_executables.get(tool_name)
+        if executable in {"dart", "flutter"}:
+            return _check_dart_flutter_executable(executable)
         return bool(executable and shutil.which(executable))
     executable = _EXECUTABLE_MAP.get(tool_name, tool_name)
     return shutil.which(executable) is not None
+
+
+def _resolve_dart_flutter_exe(exe: str) -> str | None:
+    """
+    Dart / Flutter executable ka absolute path return karo.
+
+    _check_dart_flutter_executable ka path-returning version —
+    woh bool return karta hai, yeh actual path return karta hai.
+
+    _build_tool_command mein use hota hai taaki subprocess mein
+    sirf "dart"/"flutter" string ki jagah full path bheja jaaye.
+    Windows pe PATH mein nahi hoti lekin known location pe milti hai.
+
+    Returns: absolute path string, ya None agar nahi mila.
+    """
+    import platform as _plat
+
+    # Layer 1: Standard PATH check
+    found = shutil.which(exe)
+    if found:
+        return found
+
+    os_name = _plat.system().lower()
+    exe_suffix = ".exe" if os_name == "windows" else ""
+    home = Path.home()
+
+    # Layer 2: Env vars
+    flutter_root = os.environ.get("FLUTTER_ROOT", "")
+    dart_sdk = os.environ.get("DART_SDK", "")
+    pub_cache = os.environ.get("PUB_CACHE", "")
+
+    env_paths: list[Path] = []
+    if flutter_root:
+        env_paths.append(Path(flutter_root) / "bin")
+        if exe == "dart":
+            env_paths.append(Path(flutter_root) / "bin" / "cache" / "dart-sdk" / "bin")
+    if dart_sdk:
+        env_paths.append(Path(dart_sdk) / "bin")
+    if pub_cache:
+        env_paths.append(Path(pub_cache) / "bin")
+
+    for env_path in env_paths:
+        candidate = env_path / f"{exe}{exe_suffix}"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    # Layer 3: Platform-specific known paths
+    if os_name == "windows":
+        win_paths = (
+            [
+                Path(r"C:\tools\flutter\bin"),
+                Path(r"C:\flutter\bin"),
+                Path(r"C:\src\flutter\bin"),
+                home / "flutter" / "bin",
+                home / "AppData" / "Local" / "flutter" / "bin",
+                Path(r"C:\Program Files\FlutterSDK\bin"),
+                home / "fvm" / "default" / "bin",
+                home / "AppData" / "Local" / "fvm" / "default" / "bin",
+            ] if exe == "flutter" else [
+                Path(r"C:\tools\dart-sdk\bin"),
+                Path(r"C:\Program Files\Dart\dart-sdk\bin"),
+                Path(r"C:\tools\flutter\bin"),
+                home / "flutter" / "bin",
+            ]
+        )
+        for base in win_paths:
+            for name in (f"{exe}.exe", f"{exe}.bat"):
+                candidate = base / name
+                if candidate.is_file():
+                    return str(candidate)
+
+    elif os_name == "darwin":
+        for base in [
+            Path("/opt/homebrew/bin"), Path("/usr/local/bin"),
+            home / "fvm" / "default" / "bin", home / ".pub-cache" / "bin",
+            home / "flutter" / "bin", home / "development" / "flutter" / "bin",
+            Path("/opt/homebrew/opt/dart/libexec/bin"),
+            Path("/usr/local/opt/dart/libexec/bin"),
+        ]:
+            candidate = base / exe
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+    else:  # Linux / WSL
+        for base in [
+            Path("/snap/bin"), Path("/snap/flutter/current/bin"),
+            home / "flutter" / "bin",
+            home / "snap" / "flutter" / "common" / "flutter" / "bin",
+            home / ".pub-cache" / "bin",
+            home / "fvm" / "default" / "bin", home / ".fvm" / "default" / "bin",
+            Path("/usr/lib/dart/bin"), Path("/usr/bin"), Path("/usr/local/bin"),
+            home / ".local" / "share" / "dart" / "bin",
+        ]:
+            candidate = base / exe
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+    return None
+
+
+def _check_dart_flutter_executable(exe: str) -> bool:
+    """
+    Dart / Flutter executable check — bool wrapper around _resolve_dart_flutter_exe.
+    Path detection logic _resolve_dart_flutter_exe mein hai (single source of truth).
+    """
+    return _resolve_dart_flutter_exe(exe) is not None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1337,7 +1862,12 @@ async def run_tool(
 ) -> ToolResult:
     """Ek tool async chalao."""
     run_options = options or ToolRunOptions()
-    timeout_seconds = (run_options.tool_timeouts or {}).get(tool.name, run_options.timeout_seconds)
+    # Per-tool timeout: caller override → default table → global default
+    timeout_seconds = (
+        (run_options.tool_timeouts or {}).get(tool.name)
+        or _DEFAULT_TOOL_TIMEOUTS.get(tool.name)
+        or run_options.timeout_seconds
+    )
     if not tool.available:
         return ToolResult(
             tool_name=tool.name,
@@ -1367,7 +1897,18 @@ async def run_tool(
         stderr = stderr_b.decode("utf-8", errors="replace")
         # exit 0 = clean, 1 = issues found, 2 = ruff syntax error in source — sab valid runs
         # exit -2 (timeout), -3 (not found) etc. = real failures
-        valid_exit = return_code in (0, 1, 2)
+        # Semgrep exit codes: 0 = no findings, 1 = findings found, 2 = error,
+        #   3 = config error, 4 = parse error, 7 = findings + partial scan (some files skipped)
+        # Roslynator: 0 = no issues, 1 = issues found
+        _TOOL_VALID_EXITS: dict[str, set[int]] = {
+            "semgrep": {0, 1, 4, 7},   # 7 = findings with partial scan (valid output)
+                                        # 4 = parse error on some files (still produces output)
+        }
+        tool_valid_exits = _TOOL_VALID_EXITS.get(tool.name)
+        if tool_valid_exits is not None:
+            valid_exit = return_code in tool_valid_exits
+        else:
+            valid_exit = return_code in (0, 1, 2)
         return ToolResult(
             tool_name=tool.name,
             language=tool.language,
@@ -1421,6 +1962,32 @@ async def run_tool(
         )
 
 
+def _resolve_dotnet_global_tool_exe(tool_name: str) -> str:
+    """
+    dotnet global tool ka actual executable path return karo.
+
+    WSL/Linux pe `~/.dotnet/tools/` PATH mein nahi hoti — subprocess mein
+    tool_name direct call karna fail karta hai even though binary exist karti hai.
+    Yahan full absolute path return karte hain taaki subprocess seedha chalaye.
+
+    Fallback: agar PATH mein milta hai ya koi directory nahi mili → tool_name as-is.
+    """
+    import platform as _plat
+
+    # PATH mein hai → as-is (Windows pe always PATH mein hota hai)
+    if shutil.which(tool_name) is not None:
+        return tool_name
+
+    exe_suffix = ".exe" if _plat.system().lower() == "windows" else ""
+    for tools_dir in _dotnet_global_tools_path():
+        candidate = tools_dir / f"{tool_name}{exe_suffix}"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    # Fallback — PATH pe rely karo
+    return tool_name
+
+
 def _build_tool_command(
     tool: ToolConfig,
     project_path: str,
@@ -1449,7 +2016,19 @@ def _build_tool_command(
             # (pip, setuptools) bahar rakhne ke liye --skip-editable use karo
             pip_audit_target = "--skip-editable"
 
+    # dotnet global tools ke liye — WSL/Linux pe PATH mein nahi hoti ~/.dotnet/tools/
+    # Pehle element (executable) ko absolute path se replace karo agar zaroorat ho
+    _DOTNET_GLOBAL_EXE_TOOLS = {"roslynator", "security-scan", "dotnet-stryker"}
+    # pip-installed CLI tools jo venv/bin mein hain lekin subprocess PATH mein nahi hoti
+    _PIP_EXE_TOOLS = {"semgrep"}
+    # Dart/Flutter tools — Windows pe PATH mein nahi hoti lekin
+    # _check_dart_flutter_executable ne kisi known path se True return kiya tha.
+    # Subprocess mein sirf "dart"/"flutter" string bhejne se FileNotFoundError aata hai.
+    # Solution: wahi absolute path use karo jo detection mein mili thi.
+    _DART_EXE_TOOLS = {"dart-analyze", "dart-tests"}
+    _FLUTTER_EXE_TOOLS = {"flutter-analyze"}
     command = []
+    first_part = True
     for part in tool.command:
         resolved = (
             part
@@ -1463,8 +2042,27 @@ def _build_tool_command(
             .replace("{cwd}", resolve_project_root(tool.language, project_path))
         )
         # Blank parts skip karo (jab placeholder empty string ho)
-        if resolved:
-            command.append(resolved)
+        if not resolved:
+            first_part = False
+            continue
+        # First element = executable — absolute path resolve karo jahan zaroorat ho
+        if first_part:
+            if tool.name in _DOTNET_GLOBAL_EXE_TOOLS:
+                resolved = _resolve_dotnet_global_tool_exe(resolved)
+            elif tool.name in _PIP_EXE_TOOLS:
+                # pip-installed tools: _which_in_venv se actual path lo
+                found = _which_in_venv(resolved)
+                if found:
+                    resolved = found
+            elif tool.name in _DART_EXE_TOOLS or tool.name in _FLUTTER_EXE_TOOLS:
+                # Dart/Flutter: PATH mein nahi hoti Windows pe —
+                # _check_dart_flutter_executable wala path use karo
+                exe = "flutter" if tool.name in _FLUTTER_EXE_TOOLS else "dart"
+                dart_path = _resolve_dart_flutter_exe(exe)
+                if dart_path:
+                    resolved = dart_path
+        first_part = False
+        command.append(resolved)
 
     return command, temporary_directory
 
@@ -1573,7 +2171,8 @@ class VerboseLogger:
                 f"[yellow]{rich_escape(result.tool_name):<24}[/yellow]"
                 f"[dim]{rich_escape(reason)}[/dim]"
             )
-        elif result.return_code in (0, 1, 2):
+        elif not result.skipped:
+            # Tool ran successfully (valid exit) — skipped=False means valid run
             self._print(
                 f"  [dim]✅  Done   [/dim]  "
                 f"[green]{rich_escape(result.tool_name):<24}[/green]"
@@ -1636,17 +2235,19 @@ def _apply_linux_only_filter(
 
 
 def _apply_slow_filter(tools: list[ToolConfig]) -> list[ToolConfig]:
-    """Mutation testing aur slow tools skip karo."""
+    """Mutation testing aur slow tools skip karo (--skip-slow flag ke liye)."""
+    # ALWAYS_SKIP_MUTATION_TOOLS pehle se platform.py se filter ho jaate hain.
+    # Yahan sirf woh slow tools hain jo --skip-slow se skip honge (mutation nahi).
+    # hypothesis + rapidcheck FAST hain — skip nahi honge --skip-slow mein bhi.
     slow_names = {
-        "mutmut", "pytest-cov",
-        "cargo-tarpaulin", "cargo-mutants",
-        "go-mutesting",
-        "stryker", "stryker-js", "stryker-ts",
-        "pitest",
-        "dotnet-stryker", "coverlet",
-        "mutant",
-        "infection",
+        "pytest-cov",       # slow — full test suite run karta hai
+        "cargo-tarpaulin",
+        "cargo-mutants",    # Rust mutation — fast lekin --skip-slow mein skip karo
+        "stryker",
+        "stryker-js",
+        "stryker-ts",
         "jacoco",
+        "coverlet",
     }
     return [t for t in tools if t.name not in slow_names]
 
@@ -1674,10 +2275,12 @@ def _filter_tools_for_run(
     if project_path:
         test_tool = _project_test_tool(language, project_path)
         tools = [t for t in tools if t.name != "pytest-cov" or test_tool is not None]
-        if test_tool and all(t.name != test_tool.name for t in tools):
-            # Only add test_tool if it belongs to the correct language
-            if test_tool.language in allowed_languages:
-                tools.append(test_tool)
+        if (
+            test_tool
+            and all(t.name != test_tool.name for t in tools)
+            and test_tool.language in allowed_languages
+        ):
+            tools.append(test_tool)
 
     if only:
         tools = [t for t in tools if t.check_type == only]
@@ -1700,7 +2303,7 @@ def _split_runnable_skipped(
 
     # hypothesis standalone run nahi hota — sirf display/availability ke liye hai
     # pytest-cov ke sath automatically chalata hai (hypothesis_profile plugin ke zariye)
-    # isliye runnable list se bahar rakhte hain
+    # rapidcheck TOOL_REGISTRY mein proper ToolConfig hai — woh actually run karta hai
     _display_only_tools = {"hypothesis"}
 
     if skip_unavailable:
@@ -1709,7 +2312,6 @@ def _split_runnable_skipped(
         return runnable, skipped
     runnable = [t for t in tools if t.name not in _display_only_tools]
     return runnable, []
-
 
 async def _run_tools_with_semaphore(
     runnable: list[ToolConfig],
@@ -1736,9 +2338,13 @@ async def _run_tools_with_semaphore(
             return result
 
     _MUTATION_TOOL_NAMES = {
-        "mutmut", "cargo-mutants", "go-mutesting",
-        "stryker", "stryker-js", "stryker-ts",
-        "pitest", "dotnet-stryker", "mutant", "infection",
+        # Permanently skipped tools (ALWAYS_SKIP_MUTATION_TOOLS) yahan nahi aate —
+        # platform filter pehle hata deta hai. Sirf woh jo kabhi kabhi run ho sakte hain.
+        "cargo-mutants",    # Rust — fast, --skip-slow ke bina run hoga
+        "stryker",          # C# — dotnet-based, sequential zaroor hai
+        "stryker-js",       # JS — npm-based, sequential
+        "stryker-ts",       # TS — npm-based, sequential
+        "dotnet-stryker",   # C# alias
     }
     concurrent_tools = [t for t in runnable if t.name not in _MUTATION_TOOL_NAMES]
     sequential_tools = [t for t in runnable if t.name in _MUTATION_TOOL_NAMES]
@@ -1816,9 +2422,13 @@ async def run_all_tools(
         logger.section("Running tools")
 
     _MUTATION_TOOL_NAMES = {
-        "mutmut", "cargo-mutants", "go-mutesting",
-        "stryker", "stryker-js", "stryker-ts",
-        "pitest", "dotnet-stryker", "mutant", "infection",
+        # Permanently skipped tools (ALWAYS_SKIP_MUTATION_TOOLS) platform filter se
+        # pehle hi hat jaate hain — yahan sirf woh jo sequential run karne hain.
+        "cargo-mutants",
+        "stryker",
+        "stryker-js",
+        "stryker-ts",
+        "dotnet-stryker",
     }
     concurrent_tools = [t for t in runnable if t.name not in _MUTATION_TOOL_NAMES]
     sequential_tools = [t for t in runnable if t.name in _MUTATION_TOOL_NAMES]
@@ -1852,6 +2462,19 @@ async def run_all_tools(
                 skipped=True, skip_reason="not installed",
             )
             logger.tool_done(fake, 0.0)
+        # hypothesis display-only tool ka status bhi dikhao
+        _display_only = {"hypothesis"}
+        for t in tools:
+            if t.name in _display_only:
+                status = "✅ runs via pytest-cov" if t.available else "not installed"
+                from rich.console import Console as _RC
+                from rich.markup import escape as rich_escape
+                color = "green" if t.available else "yellow"
+                _RC(stderr=True).print(
+                    f"  [dim]ℹ  [/dim]  "
+                    f"[{color}]{rich_escape(t.name):<24}[/{color}]"
+                    f"[dim]{rich_escape(status)}[/dim]"
+                )
         ran_count = len([r for r in results if not r.skipped])
         skip_count = len(skipped) + len([r for r in results if r.skipped])
         logger.summary(ran_count, skip_count)

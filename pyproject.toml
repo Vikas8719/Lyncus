@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "Lyncus"
-version = "1.0.1"
+version = "1.0.2"
 description = "Multi-language code quality CLI — detects fake tests, hardcoded values, and dead code"
 readme = "README.md"
 license = "MIT"
@@ -109,25 +109,57 @@ filterwarnings   = ["ignore::DeprecationWarning"]
 # ── Coverage ─────────────────────────────────────────────────────────────────
 [tool.coverage.run]
 source   = ["Lyncus"]
-omit     = ["tests/*", "Lyncus/config/*"]
+omit     = [
+  # Test files
+  "tests/*",
+  "tests/**/*",
+  # Config / generated
+  "Lyncus/config/*",
+  # Virtual envs
+  ".venv/*",
+  "venv/*",
+  "env/*",
+  # Build output
+  "build/*",
+  "dist/*",
+  "*.egg-info/*",
+  # Cache / tool dirs
+  "__pycache__/*",
+  ".mypy_cache/*",
+  ".pytest_cache/*",
+  ".ruff_cache/*",
+  ".hypothesis/*",
+  ".tox/*",
+  ".nox/*",
+  # Coverage reports themselves
+  "htmlcov/*",
+  "coverage/*",
+  # Misc
+  "migrations/*",
+  "scripts/*",
+  "setup.py",
+]
 branch   = true
 
 [tool.coverage.report]
 show_missing   = true
 skip_covered   = false
 fail_under     = 70
+exclude_lines  = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+]
 
-# ── Mutmut ────────────────────────────────────────────────────────────────────
+# ALWAYS_SKIP_MUTATION_TOOLS .
 [tool.mutmut]
 source_paths = ["Lyncus/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 
 [tool.Lyncus.tools.timeouts]
-mutmut = 3600
 
-# ── Lyncus self-scan config ────────────────────────────────────────────────────
-# Ye section tab use hota hai jab Lyncus apne aap ko scan kare.
-# Test files, docs aur generated folders false positives dete hain isliye exclude.
 [tool.Lyncus.ignore]
 paths = [
   "tests/",
@@ -147,17 +179,12 @@ paths = [
   "CHANGELOG.md",
   "LICENSE",
   "scripts/",
-  # Rules folder mein pattern definitions hain — intentional "bad" code examples
   "Lyncus/rules/",
 ]
 
-# Rule IDs jo self-scan mein suppress hone chahiye
 [tool.Lyncus.ignore.rules_suppress]
-# pip-audit .venv ke virtual env packages report karta hai — ye expected hai
 security_virtual_env = true
 
-# In rules ko sirf test files mein flag karna meaningful nahi
-# kyunki wahan intentionally bad patterns test kiye jaate hain
 [tool.Lyncus.hardcode]
 check_magic_numbers = false
 

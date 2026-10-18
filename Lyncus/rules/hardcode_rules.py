@@ -21,23 +21,8 @@ class HardcodeMatch:
     severity: str  # critical / warning / info
 
 
-# ── CREDENTIAL PATTERNS ─────────────────────────────────────────────────────
-#
-# Multi-language support ke liye patterns:
-#   Python/JS/Go:  password = "val"          (key = "val")
-#   Rust:          const DB_PASSWORD: &str = "val"   (TYPE_ANNOTATION ke baad =)
-#   Swift/Kotlin:  let apiKey = "val"        (let/var + name = "val")
-#   C#:            string password = "val";  (type + name = "val")
-#   Java:          String PASSWORD = "val";  (type + name = "val")
-#
-# Pattern logic:
-#   \w+ matches RUST ke const name ya kisi bhi language ka variable naam
-#   (?:[:\s]\s*\S+\s*)? optional type annotation (Rust: `: &str`, C#: String type already consumed)
-#   \s*=\s* assignment operator
-#
 CREDENTIAL_PATTERNS: list[tuple[str, str, str]] = [
-    # password / passwd / pwd — sab languages + camelCase (adminPassword, userPassword, etc.)
-    # Matches: password = "x", DB_PASSWORD: &str = "x", let adminPassword = "x"
+    
     (
         r'(?i)(?:^|[_\W])(?:admin|user|new|old|my|db|root)?(?:password|passwd|pwd)(?:[_\W]|$)(?:[^=\n]{0,30}?)=\s*["\'][^"\']{3,}["\']',
         "HC001",
@@ -282,26 +267,27 @@ def _deduplicate_matches(matches: list[HardcodeMatch]) -> list[HardcodeMatch]:
 
     for m in matches:
         if m.category in ("CREDENTIAL", "DATABASE"):
-            key = (m.file, m.line)
-            existing = cred_by_line.get(key)
+            cred_key: tuple[str, int] = (m.file, m.line)
+            existing = cred_by_line.get(cred_key)
             if existing is None:
-                cred_by_line[key] = m
+                cred_by_line[cred_key] = m
             else:
                 # Lower priority index = more specific = wins
                 existing_priority = _rule_priority(existing.rule_id)
                 current_priority  = _rule_priority(m.rule_id)
                 if current_priority < existing_priority:
-                    cred_by_line[key] = m
+                    cred_by_line[cred_key] = m
         else:
             non_cred.append(m)
 
     # Step 2: Non-credential same line+col dedup (exact duplicate guard)
+    # Type annotation: frozenset nahi, set of 4-tuple (file, line, col, category)
     seen_non_cred: set[tuple[str, int, int, str]] = set()
     deduped_non_cred: list[HardcodeMatch] = []
     for m in non_cred:
-        key = (m.file, m.line, m.column, m.category)
-        if key not in seen_non_cred:
-            seen_non_cred.add(key)
+        nc_key: tuple[str, int, int, str] = (m.file, m.line, m.column, m.category)
+        if nc_key not in seen_non_cred:
+            seen_non_cred.add(nc_key)
             deduped_non_cred.append(m)
 
     # Step 3: Merge aur original order restore karo (line number se sort)

@@ -2,7 +2,7 @@
 
 # 🐺 Lyncus
 
-### Multi-Language Code Quality CLI Tool
+### Multi-Language Code Quality CLI Tool ###
 
 *Catch fake tests, hardcoded values, and dead code — automatically, across any language.*
 
@@ -64,7 +64,7 @@ $ Lyncus scan ./my-project
 | ☕ Java | ✅ Full Support | checkstyle, spotbugs, find-sec-bugs, pitest, jacoco, pmd |
 | ⚙️ C++ | ✅ Full Support | clang-tidy, cppcheck, valgrind, flawfinder, lizard |
 | 🎮 CUDA | ✅ Full Support | compute-sanitizer, nsight-systems, clang-tidy |
-| 🔷 C# | ✅ Full Support | dotnet format, Roslyn, StyleCop, Stryker, coverlet |
+| 🔷 C# | ✅ Full Support | dotnet format, Roslyn, StyleCop, Stryker, coverlet, semgrep |
 | 💎 Ruby | ✅ Full Support | rubocop, brakeman, debride, simplecov |
 | 🐘 PHP | ✅ Full Support | phpcs, phpstan, psalm, phan |
 | 🎯 Kotlin | ✅ Full Support | detekt, ktlint |
@@ -157,6 +157,61 @@ Lyncus install-deps --lang python           # install deps for a language
 Lyncus install-deps --all                   # install all available deps
 Lyncus --version
 Lyncus --help
+```
+
+---
+
+## 🔷 C# — semgrep Manual Install
+
+`semgrep` C#  SAST scanner  — OWASP top-10 rules, hardcoded secrets, injection vulnerabilities detection.
+
+Lyncus `install-deps --lang csharp` to auto-install , Option 2  manually  install :
+
+```bash
+# Linux / WSL (pip — recommended)
+pip install semgrep
+
+# macOS (Homebrew)
+brew install semgrep
+
+# Windows (winget)
+winget install --id Semgrep.Semgrep --exact --silent --accept-package-agreements --accept-source-agreements
+
+# Windows (Chocolatey)
+choco install semgrep
+
+# Install verify karo
+semgrep --version
+```
+
+> **WSL Note:** Semgrep downloads the ruleset on its first run, so it might be slow. (timeout).
+> Pre-warm : `semgrep --config p/csharp --version` — Faster from cache later.
+
+```bash
+# Lyncus ke saath C# SAST run karo
+Lyncus scan . --lang csharp --only security
+```
+
+### 🔷 C# — dotnet global tools PATH fix (Linux / WSL / macOS)
+
+`dotnet tool install -g` Following tools `~/.dotnet/tools/` They get installed, but the directory is not automatically added to the PATH.isliye `roslynator`, `security-scan`, `dotnet-stryker` 
+
+**Lyncus ab `~/.dotnet/tools/` It checks directly** — The scan works fine, but fix your PATH if you need to run it manually from the terminal.
+
+```bash
+# First time manually run 
+export PATH=$PATH:~/.dotnet/tools
+
+# Permanent fix — ~/.bashrc (bash) ya ~/.zshrc (zsh/macOS) :
+echo 'export PATH=$PATH:~/.dotnet/tools' >> ~/.bashrc   # Linux / WSL
+echo 'export PATH=$PATH:~/.dotnet/tools' >> ~/.zshrc    # macOS (zsh default)
+
+# Reload karo
+source ~/.bashrc   # ya source ~/.zshrc
+
+# Verify
+roslynator --version
+security-scan --version
 ```
 
 ---

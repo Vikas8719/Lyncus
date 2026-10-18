@@ -227,11 +227,31 @@ def _parse_radon(result: ToolResult) -> list[Problem]:
         another_file.py
             B  1:0 some_func - B (8)
     """
+    # Directories jinka output skip karna hai — venv, site-packages, etc.
+    # Forward slash aur backslash dono handle karo (Windows + Linux)
+    _RADON_SKIP_SEGMENTS = {
+        "site-packages", "dist-packages",
+        "venv", ".venv", "venv-win", "venv-linux", "venv-mac",
+        "env", "node_modules", ".git", "build", "dist",
+        "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    }
+
+    def _is_third_party(filepath: str) -> bool:
+        """Path ke segments check karo — koi bhi skip segment ho toh True."""
+        normalized = filepath.replace("\\", "/")
+        parts = set(normalized.split("/"))
+        return bool(parts & _RADON_SKIP_SEGMENTS)
+
     problems = []
     current_file = ""
+    skip_current = False
     for raw_line in result.stdout.splitlines():
         if raw_line and not raw_line[0].isspace() and raw_line.rstrip().endswith(".py"):
             current_file = raw_line.strip()
+            skip_current = _is_third_party(current_file)
+            continue
+
+        if skip_current:
             continue
 
         problem = _parse_radon_finding(raw_line.strip(), current_file)
@@ -275,6 +295,226 @@ def _parse_radon_finding(finding: str, file: str) -> Problem | None:
         column=int(col),
         message=f"'{name}' complexity {grade} (score:{score[:-1]}) — {get_radon_description(grade)}",
     )
+
+
+def _parse_pytest_cov(result: ToolResult) -> list[Problem]:
+    """
+    pytest-cov + Hypothesis output parse karo.
+
+    Dono types handle karta hai:
+      1. Hypothesis falsifying examples — property test failures
+      2. Coverage warnings — low branch coverage per file
+
+    pytest -q output format:
+      FAILED tests/test_foo.py::test_bar - hypothesis.errors.Unsatisfied...
+      Falsifying example: test_bar(x=5, y=-1)
+      ...
+      TOTAL    120     18    85%
+    """
+    problems: list[Problem] = []
+    output = result.stdout + "\n" + result.stderr
+
+    # ── 1. Hypothesis Failures ─────────────────────────────────────────────
+    # Pattern: "Falsifying example: <test_name>(<args>)"
+    _HYPO_FALSIFY_RE = re.compile(
+        r"Falsifying example: (\w+)\(([^)]*)\)", re.MULTILINE
+    )
+    # Pattern: "FAILED tests/test_foo.py::test_bar - <ErrorType>: <msg>"
+    _PYTEST_FAILED_RE = re.compile(
+        r"FAILED (.+?)::(\w+)\s+-\s+(.+)", re.MULTILINE
+    )
+    # Pattern: "hypothesis.errors.Flaky" ya "hypothesis.errors.Unsatisfied"
+    _HYPO_ERROR_RE = re.compile(
+        r"(hypothesis\.errors\.\w+|AssertionError): (.+)", re.MULTILINE
+    )
+
+    failed_tests: dict[str, tuple[str, str]] = {}  # test_name → (file, error_msg)
+    for m in _PYTEST_FAILED_RE.finditer(output):
+        file_path, test_name, error = m.groups()
+        failed_tests[test_name] = (file_path.strip(), error.strip())
+
+    for m in _HYPO_FALSIFY_RE.finditer(output):
+        test_name, args = m.groups()
+        file_path, error_msg = failed_tests.get(test_name, (".", ""))
+
+        # Error context — try to get the actual assertion error
+        hypo_err = _HYPO_ERROR_RE.search(output, m.start())
+        detail = hypo_err.group(2)[:120] if hypo_err else error_msg[:120]
+
+        problems.append(Problem(
+            tool="pytest-cov",
+            rule_id="HYPO-FALSIFY",
+            category="PROPERTY",
+            severity="critical",
+            file=file_path,
+            line=0,
+            column=0,
+            message=(
+                f"Hypothesis falsifying example found: {test_name}({args}) — {detail}"
+                if detail else
+                f"Hypothesis found a failing example for {test_name}({args})"
+            ),
+            suggestion="Add @settings(max_examples=1000) or fix the property invariant",
+        ))
+
+    # ── 2. Hypothesis Flaky Tests ──────────────────────────────────────────
+    _HYPO_FLAKY_RE = re.compile(
+        r"hypothesis\.errors\.Flaky.*?in (\w+)", re.MULTILINE | re.DOTALL
+    )
+    for m in _HYPO_FLAKY_RE.finditer(output):
+        test_name = m.group(1)
+        file_path, _ = failed_tests.get(test_name, (".", ""))
+        problems.append(Problem(
+            tool="pytest-cov",
+            rule_id="HYPO-FLAKY",
+            category="PROPERTY",
+            severity="warning",
+            file=file_path,
+            line=0,
+            column=0,
+            message=f"Hypothesis flaky test detected: {test_name} — result changes between runs",
+            suggestion="Use @settings(deriving=...) or make state management deterministic",
+        ))
+
+    # ── 3. Coverage Warnings (low branch coverage) ────────────────────────
+    # Format: "file.py     50     10    80%   12-15, 20"
+    # Only warn on files where coverage < threshold (default 70%)
+    _COV_LINE_RE = re.compile(
+        r"^(\S+\.py)\s+\d+\s+\d+\s+(\d+)%", re.MULTILINE
+    )
+    _COV_THRESHOLD = 70
+
+    for m in _COV_LINE_RE.finditer(output):
+        file_path, cov_pct_str = m.groups()
+        cov_pct = int(cov_pct_str)
+        if cov_pct < _COV_THRESHOLD:
+            severity = "critical" if cov_pct < 50 else "warning"
+            problems.append(Problem(
+                tool="pytest-cov",
+                rule_id="COV-LOW",
+                category="COVERAGE",
+                severity=severity,
+                file=file_path,
+                line=0,
+                column=0,
+                message=f"Branch coverage {cov_pct}% < {_COV_THRESHOLD}% threshold",
+                suggestion="Add tests for uncovered branches",
+            ))
+
+    # ── 4. General test failures (non-hypothesis) ─────────────────────────
+    # Agar hypothesis failures already parse nahi hue toh generic failures
+    if not problems and result.return_code not in (0, 5):  # 5 = no tests collected
+        for m in _PYTEST_FAILED_RE.finditer(output):
+            file_path, test_name, error = m.groups()
+            if "hypothesis" in error.lower():
+                continue  # Already handled above
+            problems.append(Problem(
+                tool="pytest-cov",
+                rule_id="TEST-FAIL",
+                category="TEST",
+                severity="critical",
+                file=file_path.strip(),
+                line=0,
+                column=0,
+                message=f"Test failed: {test_name} — {error.strip()[:120]}",
+            ))
+
+    return problems
+
+
+def _parse_rapidcheck(result: ToolResult) -> list[Problem]:
+    """
+    RapidCheck output parse karo — C++/CUDA property-based testing.
+
+    RapidCheck output format (stdout):
+      [LYNCUS] RapidCheck: 2 properties passed (1000 examples each)   ← success
+      [LYNCUS] RapidCheck: identity test FAILED                        ← failure
+      Falsifying example: ...                                           ← counterexample
+      [LYNCUS] RapidCheck: link failed — rapidcheck library not found  ← install hint
+
+    rc::check() output:
+      Using configuration: seed=12345
+      identity property: OK, passed 1000 tests
+      commutative addition: FAILED, after 42 tests
+          Counterexample: (a = 3, b = -1)
+    """
+    output = result.stdout + "\n" + result.stderr
+    problems: list[Problem] = []
+
+    # Link failure — rapidcheck library install nahi hai
+    if "link failed" in output.lower() or "rapidcheck library not found" in output.lower():
+        problems.append(Problem(
+            tool=result.tool_name,
+            rule_id="RC-NOT-LINKED",
+            category="PROPERTY",
+            severity="info",
+            file=".",
+            line=0,
+            column=0,
+            message="RapidCheck header found but library not linked — install rapidcheck library",
+            suggestion=(
+                "vcpkg install rapidcheck / apt-get install librapidcheck-dev / "
+                "brew install rapidcheck"
+            ),
+        ))
+        return problems
+
+    # Runner not found — auto-create zaroor hai
+    if "runner not found" in output.lower():
+        return []  # Preview me handle hota hai, scan mein silent skip
+
+    # Property failures — "FAILED" in rc::check output
+    _RC_FAIL_RE = re.compile(
+        r"([\w\s]+): FAILED,? after (\d+) tests?", re.IGNORECASE
+    )
+    _RC_COUNTEREX_RE = re.compile(
+        r"(?:Counterexample|Falsifying example)[:\s]+(.+)", re.IGNORECASE
+    )
+
+    for m in _RC_FAIL_RE.finditer(output):
+        prop_name = m.group(1).strip()
+        tests_run = int(m.group(2))
+
+        # Counterexample dhundo
+        counterex = _RC_COUNTEREX_RE.search(output, m.end())
+        counterex_str = counterex.group(1).strip()[:100] if counterex else "unknown"
+
+        problems.append(Problem(
+            tool=result.tool_name,
+            rule_id="RC-PROPERTY-FAIL",
+            category="PROPERTY",
+            severity="critical",
+            file=".",
+            line=0,
+            column=0,
+            message=(
+                f"RapidCheck: property '{prop_name}' failed after {tests_run} examples. "
+                f"Counterexample: {counterex_str}"
+            ),
+            suggestion="Fix the property invariant or the production code it tests",
+        ))
+
+    # Lyncus [FAILED] markers
+    _LYNCUS_FAIL_RE = re.compile(
+        r"\[LYNCUS\] RapidCheck: (.+?) (?:test )?FAILED", re.IGNORECASE
+    )
+    for m in _LYNCUS_FAIL_RE.finditer(output):
+        prop_name = m.group(1).strip()
+        if not any(p.rule_id == "RC-PROPERTY-FAIL" and prop_name in p.message
+                   for p in problems):
+            problems.append(Problem(
+                tool=result.tool_name,
+                rule_id="RC-PROPERTY-FAIL",
+                category="PROPERTY",
+                severity="critical",
+                file=".",
+                line=0,
+                column=0,
+                message=f"RapidCheck: '{prop_name}' property failed",
+                suggestion="Check the property invariant and fix the underlying bug",
+            ))
+
+    return problems
 
 
 def _parse_pip_audit(result: ToolResult) -> list[Problem]:
@@ -567,7 +807,7 @@ def _parse_cargo_machete(result: ToolResult) -> list[Problem]:
                 file="Cargo.toml",
                 line=0,
                 column=0,
-                message=f"Unused dependency: '{dep}' — Cargo.toml se remove karo",
+                message=f"Unused dependency: '{dep}' — remove it from Cargo.toml",
             )
         )
     return problems
@@ -730,6 +970,7 @@ def _parse_cppcheck(result: ToolResult) -> list[Problem]:
             message=i["message"],
         )
         for i in issues
+        if not _is_third_party_cpp(i["file"])
     ]
 
 
@@ -780,6 +1021,7 @@ def _parse_clang_tidy(result: ToolResult) -> list[Problem]:
             message=i["message"],
         )
         for i in parse_clang_tidy_output(result.stdout + result.stderr)
+        if not _is_third_party_cpp(i["file"])
     ]
 
 
@@ -798,6 +1040,7 @@ def _parse_flawfinder(result: ToolResult) -> list[Problem]:
             message=i["message"],
         )
         for i in parse_flawfinder_output(result.stdout)
+        if not _is_third_party_cpp(i["file"])
     ]
 
 
@@ -811,10 +1054,6 @@ def _parse_lizard(result: ToolResult) -> list[Problem]:
             tool="lizard",
             rule_id=i["rule_id"],
             category=i["category"],
-            # C++/CUDA mein complexity warning naturally zyada hoti hai —
-            # CCN 25 threshold pe bhi complex functions common hain.
-            # Python mein radon use karta hai (alag parser) — yahan sirf C++ aata hai.
-            # Info rakho taaki score penalise na ho; critical/warning sirf E/F grade pe.
             severity="info" if language in {"cpp", "cuda"} else i["severity"],
             file=i["file"],
             line=i["line"],
@@ -822,6 +1061,7 @@ def _parse_lizard(result: ToolResult) -> list[Problem]:
             message=i["message"],
         )
         for i in parse_lizard_output(result.stdout)
+        if not _is_third_party_cpp(i["file"])
     ]
 
 
@@ -864,7 +1104,7 @@ def _parse_dotnet_format(result: ToolResult) -> list[Problem]:
                 file=file.strip(),
                 line=0,
                 column=0,
-                message="Formatting required — dotnet format chalao",
+                message="Formatting required — run dotnet format",
             )
         )
     return problems
@@ -1514,12 +1754,35 @@ def _parse_compute_sanitizer(result: ToolResult) -> list[Problem]:
 # GENERIC FALLBACK
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# C++ / generic third-party path filter
+# build\vcpkg_installed, third_party, extern, vendor etc. skip karo
+_CPP_SKIP_PATH_SEGMENTS = {
+    "vcpkg_installed", "vcpkg", "third_party", "thirdparty",
+    "extern", "external", "vendor", "deps", "dependencies",
+    "site-packages", "dist-packages",
+    "venv", ".venv", "venv-win", "venv-linux", "venv-mac",
+    "node_modules", ".cache",
+}
+
+
+def _is_third_party_cpp(filepath: str) -> bool:
+    """Path ke andar koi third-party/build segment ho toh True."""
+    normalized = filepath.replace("\\", "/")
+    # build/vcpkg_installed special case
+    if "vcpkg_installed" in normalized:
+        return True
+    parts = set(normalized.split("/"))
+    return bool(parts & _CPP_SKIP_PATH_SEGMENTS)
+
 
 def _parse_generic(result: ToolResult) -> list[Problem]:
     """Generic fallback — file:line:col: message format."""
     problems = []
     output = result.stdout + "\n" + result.stderr
-    skip_dirs = {"node_modules", "__pycache__", ".git", "target", "vendor"}
+    skip_dirs = {
+        "node_modules", "__pycache__", ".git", "target", "vendor",
+        "vcpkg_installed", "build", "third_party", "extern", "external",
+    }
     # pytest/test runner summary lines — false positives hain, skip karo
     _SKIP_PREFIXES = ("=", "-", "*", "PASSED", "FAILED", "ERROR", "collected", "passed", "failed")
     for raw_line in output.splitlines():
@@ -1588,6 +1851,8 @@ PARSERS: dict[str, Callable[[ToolResult], list[Problem]]] = {
     "radon": _parse_radon,
     "pip-audit": _parse_pip_audit,
     "mutmut": _parse_mutmut,
+    # pytest-cov + Hypothesis (1000 examples per test)
+    "pytest-cov": _parse_pytest_cov,
     # JS / TS
     "eslint": _parse_eslint,
     "tsc": _parse_tsc,
@@ -1639,6 +1904,9 @@ PARSERS: dict[str, Callable[[ToolResult], list[Problem]]] = {
     "msan-cpp":         _parse_msan,   # Valgrind replacement — uninitialized reads
     "tsan-cpp":         _parse_tsan,   # Thread safety — data races
     "compsan-cpp":      _parse_compsan,  # Combined ASan+UBSan for C++
+    # RapidCheck — C++/CUDA property-based testing (1000 examples)
+    "rapidcheck":       _parse_rapidcheck,
+    "rapidcheck-cuda":  _parse_rapidcheck,
     # CUDA sanitizers
     "asan-cuda":        _parse_asan,
     "ubsan-cuda":       _parse_ubsan,

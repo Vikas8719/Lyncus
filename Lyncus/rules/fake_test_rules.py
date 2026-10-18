@@ -42,48 +42,48 @@ PYTHON_FAKE_PATTERNS: list[tuple[str, str, str, str]] = [
     # (pattern, rule_id, description, suggestion)
     (_ASSERT_KEYWORD + _TRUE_LITERAL,
      "FT001",
-     "assert True — test kuch bhi prove nahi karta",
-     "Real value check karo: assert result == expected_value"),
+     "assert True — the test does not verify anything",
+     "Check a real value: assert result == expected_value"),
 
     (_ASSERT_KEYWORD + _FALSE_LITERAL,
      "FT002",
-     "assert False — test hamesha fail hoga",
-     "pytest.raises() use karo exception test ke liye"),
+     "assert False — the test always fails",
+     "Use pytest.raises() to test exceptions"),
 
     (_ASSERT_KEYWORD + _NOT_NONE_PATTERN,
      "FT003",
-     "assert x is not None — bahut weak check hai",
-     "Actual value ya type check karo"),
+     "assert x is not None — this is a very weak check",
+     "Check the actual value or type"),
 
     (_ASSERT_KEYWORD + _NEQ_NONE_PATTERN,
      "FT004",
-     "assert x != None — weak check, `is not None` use karo + value check",
-     "Actual content verify karo"),
+     "assert x != None — weak check; use `is not None` and verify the value",
+     "Verify the actual content"),
 
     (_ASSERT_KEYWORD + _LEN_GT_ZERO,
      "FT005",
-     "assert len(x) > 0 — sirf empty check, content verify nahi",
-     "Specific length ya items check karo"),
+     "assert len(x) > 0 — checks only that the value is not empty, not its content",
+     "Check a specific length or expected items"),
 
     (r'\bassert\s+\w+\b\s*$',
      "FT006",
-     "assert variable — sirf truthiness check, value nahi",
-     "assert variable == expected_value use karo"),
+     "assert variable — checks only truthiness, not the value",
+     "Use assert variable == expected_value"),
 
     (r'def\s+test_\w+\(\w*\)\s*:\s*\n\s*pass\b',
      "FT007",
-     "Empty test function — koi assertion hi nahi",
-     "Test body likho ya delete karo"),
+     "Empty test function — no assertions",
+     "Write a test body or remove the function"),
 
     (r'def\s+test_\w+\(\w*\)\s*:\s*\n\s*\.\.\.',
      "FT008",
-     "Placeholder test (...)  — koi assertion nahi",
+     "Placeholder test (...) — no assertions",
      "Real test logic likho"),
 
     (r'#\s*(noqa|type:\s*ignore|pragma:\s*no cover)',
      "FT009",
-     "Test mein noqa/no cover — problem chhupa rahe ho",
-     "Problem fix karo, suppress mat karo"),
+     "Test uses noqa/no cover to hide an issue",
+     "Fix the issue instead of suppressing it"),
 ]
 
 # ── JAVA FAKE TEST PATTERNS ──────────────────────────────────────────────────
@@ -95,23 +95,23 @@ _JAVA_ASSERT_EQ_NULL_PAT = r"assert" + r"Equals\s*\(\s*null\s*,\s*null\s*\)"
 JAVA_FAKE_PATTERNS: list[tuple[str, str, str, str]] = [
     (_JAVA_ASSERT_TRUE_PAT,
      "FT101",
-     "assertTrue(true) — always passes, kuch prove nahi",
-     "Real condition check karo"),
+     "assertTrue(true) — always passes and proves nothing",
+     "Check a real condition"),
 
     (_JAVA_ASSERT_NOT_NULL_PAT,
      "FT102",
-     "assertNotNull only — value verify nahi hoti",
-     "assertEquals ya specific field check karo"),
+     "assertNotNull only — does not verify the value",
+     "Use assertEquals or check a specific field"),
 
     (r'@Test\s*\n\s*public\s+void\s+\w+\s*\(\s*\)\s*\{\s*\}',
      "FT103",
-     "Empty @Test method — koi assertion nahi",
+     "Empty @Test method — no assertions",
      _WRITE_TEST_BODY),
 
     (_JAVA_ASSERT_EQ_NULL_PAT,
      "FT104",
      "assertEquals(null, null) — meaningless test",
-     "Real values compare karo"),
+     "Compare real values"),
 ]
 
 # ── JAVASCRIPT / TYPESCRIPT FAKE TEST PATTERNS ───────────────────────────────
@@ -122,27 +122,27 @@ JS_FAKE_PATTERNS: list[tuple[str, str, str, str]] = [
     (_JS_EXPECT_TRUE_PAT,
      "FT201",
      "expect(true).toBe(true) — always passes",
-     "Real value test karo"),
+     "Test a real value"),
 
     (r'expect\s*\(\s*\w+\s*\)\s*\.\s*toBeDefined\s*\(\s*\)',
      "FT202",
-     "toBeDefined() only — value verify nahi hoti",
-     "toEqual ya specific property check karo"),
+     "toBeDefined() only — does not verify the value",
+     "Use toEqual or check a specific property"),
 
     (r'it\s*\(\s*["\'][^"\']+["\']\s*,\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)',
      "FT203",
-     "Empty it() block — koi assertion nahi",
+     "Empty it() block — no assertions",
      _WRITE_TEST_BODY),
 
     (r'test\s*\(\s*["\'][^"\']+["\']\s*,\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)',
      "FT204",
-     "Empty test() block — koi assertion nahi",
+     "Empty test() block — no assertions",
      _WRITE_TEST_BODY),
 
     (r'expect\s*\(\s*\w+\s*\)\s*\.\s*not\s*\.\s*toBeNull\s*\(\s*\)',
      "FT205",
      "not.toBeNull() only — weak check",
-     "Actual value ya structure verify karo"),
+     "Verify the actual value or structure"),
 ]
 
 # ── C# FAKE TEST PATTERNS ────────────────────────────────────────────────────
@@ -154,16 +154,16 @@ CSHARP_FAKE_PATTERNS: list[tuple[str, str, str, str]] = [
     (_CS_IS_TRUE_PAT,
      "FT301",
      "Assert.IsTrue(true) — always passes",
-     "Real condition check karo"),
+     "Check a real condition"),
 
     (_CS_IS_NOT_NULL_PAT,
      "FT302",
-     "Assert.IsNotNull only — value verify nahi hoti",
-     "Assert.AreEqual ya specific property check karo"),
+     "Assert.IsNotNull only — does not verify the value",
+     "Use Assert.AreEqual or check a specific property"),
 
     (r'\[Test(?:Method)?\]\s*\n\s*public\s+void\s+\w+\s*\(\s*\)\s*\{\s*\}',
      "FT303",
-     "Empty [Test] method — koi assertion nahi",
+     "Empty [Test] method — no assertions",
      _WRITE_TEST_BODY),
 ]
 
@@ -175,30 +175,30 @@ RUST_FAKE_PATTERNS: list[tuple[str, str, str, str]] = [
     (_RUST_ASSERT_TRUE_PAT,
      "FT401",
      "assert!(true) — always passes",
-     "Real condition assert karo"),
+     "Assert a real condition"),
 
     (r'#\[test\]\s*\n\s*fn\s+\w+\s*\(\s*\)\s*\{\s*\}',
      "FT402",
-     "Empty #[test] function — koi assertion nahi",
+     "Empty #[test] function — no assertions",
      _WRITE_TEST_BODY),
 
     (r'assert!\s*\(\w+\.is_some\(\)\)',
      "FT403",
-     "assert!(x.is_some()) — value check nahi hoti",
-     "assert_eq!(x.unwrap(), expected) use karo"),
+     "assert!(x.is_some()) — does not verify the value",
+     "Use assert_eq!(x.unwrap(), expected)"),
 ]
 
 # ── GO FAKE TEST PATTERNS ────────────────────────────────────────────────────
 GO_FAKE_PATTERNS: list[tuple[str, str, str, str]] = [
     (r'func\s+Test\w+\s*\(\s*t\s*\*testing\.T\s*\)\s*\{\s*\}',
      "FT501",
-     "Empty Test function — koi assertion nahi",
-     "t.Error ya t.Fatal se check karo"),
+     "Empty Test function — no assertions",
+     "Use t.Error or t.Fatal to check the result"),
 
     (r'if\s+\w+\s*==\s*nil\s*\{\s*t\.Error',
      "FT502",
-     "Sirf nil check — value verify nahi hoti",
-     "Actual value compare karo"),
+     "Only checks for nil — does not verify the value",
+     "Compare the actual value"),
 ]
 
 

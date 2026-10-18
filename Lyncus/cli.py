@@ -84,27 +84,85 @@ class _ScanReport:
     warning_count: int
 
 
+SKIP_DIRS = {
+    # Virtual environments
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    # Package managers
+    "node_modules",
+    "vendor",
+    "packages",
+    # VCS
+    ".git",
+    ".svn",
+    ".hg",
+    # Build output
+    "dist",
+    "build",
+    "target",          # Rust / Maven
+    "bin",
+    "obj",             # .NET
+    "out",
+    "_build",
+    # Python cache / tool dirs
+    "__pycache__",
+    ".mypy_cache",
+    ".cache",
+    "cache",
+    ".hypothesis",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".tox",
+    ".nox",
+    # Java / Kotlin / Gradle
+    ".gradle",
+    "cmake-build-debug",
+    "cmake-build-release",
+    # Coverage / report output dirs
+    "htmlcov",
+    "coverage",
+    ".coverage",
+    "reports",
+    "report",
+    # Misc generated / data dirs
+    "migrations",      # Django DB migrations — auto-generated
+    "fixtures",
+    "static",
+    "media",
+    ".eggs",
+    "*.egg-info",
+}
+
+# File extensions jinka scan karna bekaar hai — koi actual source code nahi hota
 SKIP_EXTENSIONS = {
-    ".pyc",
-    ".pyo",
-    ".pyd",
-    ".so",
-    ".dll",
-    ".exe",
-    ".bin",
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".ico",
-    ".svg",
-    ".json",
-    ".zip",
-    ".tar",
-    ".gz",
-    ".lock",
-    ".whl",
-    ".egg",
+    # Compiled / binary
+    ".pyc", ".pyo", ".pyd",
+    ".so", ".dll", ".exe", ".bin", ".o", ".a", ".lib",
+    ".whl", ".egg",
+    # Images / media
+    ".jpg", ".jpeg", ".png", ".gif", ".ico", ".svg",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm", ".webp",
+    ".ttf", ".woff", ".woff2", ".eot",
+    # Archives
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    # Data / report files — no executable code
+    ".json", ".xml", ".yaml", ".yml",
+    ".csv", ".tsv", ".parquet", ".feather",
+    ".db", ".sqlite", ".sqlite3",
+    ".lock",           # poetry.lock, package-lock.json etc.
+    # Documentation / markup
+    ".md", ".rst", ".txt", ".pdf", ".docx", ".xlsx",
+    ".html", ".htm",   # rendered output, not source templates
+    # Config / env files
+    ".env", ".ini", ".cfg", ".conf", ".toml", ".properties",
+    # Coverage / profiling output
+    ".coverage", ".prof", ".stats",
+    # Editor / IDE
+    ".DS_Store", ".idea", ".vscode",
+    # Certificates / keys — never scan these
+    ".pem", ".crt", ".key", ".p12", ".pfx",
 }
 
 # Only source files handled by the supported language scanners are collected.
@@ -116,31 +174,6 @@ _MAX_FILE_SIZE_MB = 5
 _BYTES_PER_MB = 1024 * 1024
 # Skip files larger than 5 MB to prevent memory spikes
 _MAX_FILE_SIZE = _MAX_FILE_SIZE_MB * _BYTES_PER_MB
-
-SKIP_DIRS = {
-    "venv",
-    ".venv",
-    "env",
-    ".env",
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    "__pycache__",
-    ".mypy_cache",
-    ".cache",
-    "cache",
-    ".hypothesis",
-    "target",
-    "bin",
-    "obj",
-    ".ruff_cache",
-    ".pytest_cache",
-    "vendor",
-    "packages",
-    ".gradle",
-    "cmake-build-debug",
-}
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -174,6 +207,27 @@ def _should_ignore_path(fpath: Path, root: Path, ignore_paths: list[str]) -> boo
     return False
 
 
+def _is_site_packages_path(fpath: Path) -> bool:
+    """
+    Check karo ki file kisi Python environment ke site-packages mein hai ya nahi.
+    lnx_env, venv-win, .venv, venv — sab ke andar site-packages kabhi scan nahi hone chahiye.
+    Third-party library code hai, project code nahi.
+    """
+    parts = fpath.parts
+    for i, part in enumerate(parts):
+        if part in {"site-packages", "dist-packages", "lib-dynload"}:
+            return True
+        # Koi bhi env-looking folder jo site-packages contain kare
+        # e.g. lnx_env/lib/python3.14/site-packages
+        #       venv-win/Lib/site-packages
+        if i + 1 < len(parts) and parts[i + 1] in {"site-packages", "Lib", "lib"}:
+            # Check karo ki yeh ek venv-style folder hai
+            lower = part.lower()
+            if any(k in lower for k in ("env", "venv", ".venv", "lnx_", "win_")):
+                return True
+    return False
+
+
 def _collect_files(project_path: str, ignore_paths: list[str] | None = None) -> list[Path]:
     root = Path(project_path)
     if root.is_file():
@@ -189,12 +243,29 @@ def _collect_files(project_path: str, ignore_paths: list[str] | None = None) -> 
 
     files = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in extra_ignore]
+        current = Path(dirpath)
+
+        # site-packages ke andar kabhi mat jao — third-party library code hai
+        if _is_site_packages_path(current):
+            dirnames[:] = []
+            continue
+
+        # Standard SKIP_DIRS filter
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in extra_ignore
+            # site-packages wale dirs bhi prune karo early
+            and d not in {"site-packages", "dist-packages", "lib-dynload"}
+        ]
+
         for fname in filenames:
-            fpath = Path(dirpath) / fname
+            fpath = current / fname
             if fname.lower() == ".env" or fname.lower().startswith(".env."):
                 continue
             if fpath.suffix.lower() not in SOURCE_EXTENSIONS:
+                continue
+            # Final safety check — site-packages file kabhi include mat karo
+            if _is_site_packages_path(fpath):
                 continue
             # Full relative-path check for deep entries like "Lyncus/rules/"
             if ignore_paths and _should_ignore_path(fpath, root, ignore_paths):
@@ -538,7 +609,8 @@ def _display_mutation_score(problems: list[Problem]) -> None:
                         f"[bold {color}]{mut_score}/100[/bold {color}]  "
                         f"[dim](killed {killed}/{total} mutants)[/dim]"
                     )
-        except Exception:
+        except (OSError, ValueError, KeyError):
+            # Stats file parse nahi hua — silently skip karo (optional display)
             pass
         return
 
@@ -575,6 +647,7 @@ def _auto_install_missing_tools(
         if not skip_slow and mutation.install_cmd:
             commands.setdefault(mutation.tool, mutation.install_cmd)
 
+    install_outcomes: dict[str, bool] = {}
     if commands:
         from Lyncus.core.platform import is_ci
         ci_note = " (all tools will be available in CI/CD)" if not is_ci() else ""
@@ -582,9 +655,23 @@ def _auto_install_missing_tools(
             f"  [yellow]📦 {len(commands)} project tool(s) missing — "
             f"auto-installing (pip/npm/cargo only)...{ci_note}[/yellow]"
         )
-        install_tool_commands(commands)
+        install_outcomes = install_tool_commands(commands)
 
+    # Install ke baad fresh availability check karo.
+    # `shutil.which` cache nahi karta — lekin kuch tools (mutmut) PATH mein turant
+    # nahi aate same process mein. Isliye:
+    #   1. Fresh `get_available_tools()` call karo (catches PATH-visible tools)
+    #   2. `install_outcomes` se jo successfully installed hue unhe bhi available maano
+    #      (check_tool_available importlib fallback use karta hai unke liye)
     tool_availability = get_available_tools(detected_lang)
+
+    # install_outcomes mein jo True hain, unhe force-available maano —
+    # importlib check abhi bhi kaam karta hai bhale PATH update na hua ho
+    for name, success in install_outcomes.items():
+        if success and name in tool_availability:
+            # Dobara check karo with importlib fallback
+            tool_availability[name] = check_tool_available(name) or success
+
     available = [
         name for name, ok in tool_availability.items()
         if ok and not should_skip_tool_on_platform(name)[0]
@@ -671,6 +758,11 @@ def _collect_scanner_install_commands(
         "apt ", "apt-get ", "snap ",
     )
 
+    # dotnet tools (dotnet-build, dotnet-format, security-scan, roslynator, stryker)
+    # sirf tab install hote hain jab .NET SDK available ho.
+    # WSL/Linux mein dotnet nahi hota — try mat karo, clean message dikhao.
+    _dotnet_available = shutil.which("dotnet") is not None
+
     commands: dict[str, str] = {}
     for tool in TOOL_REGISTRY:
         # Hard guard: skip any tool whose language does not match detected lang
@@ -682,9 +774,16 @@ def _collect_scanner_install_commands(
             should_skip, _ = should_skip_tool_on_platform(tool.name)
             if should_skip or (skip_slow and tool.check_type in {"coverage", "faketests"}):
                 continue
+            all_candidates = [p.strip() for p in tool.install_cmd.split(" / ") if p.strip()]
+
+            # dotnet tool install — skip if .NET SDK not present on this system
+            is_dotnet_tool = any(c.lower().startswith("dotnet tool install") for c in all_candidates)
+            if is_dotnet_tool and not _dotnet_available:
+                # Skip silently — install_tool_commands will show the proper message
+                continue
+
             # Skip tools whose ONLY install path is a system manager
             # (e.g. cppcheck on Windows requires winget/choco — not auto-installable)
-            all_candidates = [p.strip() for p in tool.install_cmd.split(" / ") if p.strip()]
             has_safe_install = any(
                 not c.lower().startswith(SYSTEM_MANAGER_PREFIXES)
                 for c in all_candidates
@@ -698,12 +797,16 @@ def _collect_scanner_install_commands(
         test_lang_key = "javascript" if detected_lang == "typescript" else detected_lang
         if test_tool.language in {test_lang_key, detected_lang}:
             all_candidates = [p.strip() for p in test_tool.install_cmd.split(" / ") if p.strip()]
-            has_safe_install = any(
-                not c.lower().startswith(SYSTEM_MANAGER_PREFIXES)
-                for c in all_candidates
-            )
-            if has_safe_install:
-                commands[test_tool.name] = test_tool.install_cmd
+            is_dotnet_tool = any(c.lower().startswith("dotnet tool install") for c in all_candidates)
+            if is_dotnet_tool and not _dotnet_available:
+                pass  # dotnet nahi hai — skip
+            else:
+                has_safe_install = any(
+                    not c.lower().startswith(SYSTEM_MANAGER_PREFIXES)
+                    for c in all_candidates
+                )
+                if has_safe_install:
+                    commands[test_tool.name] = test_tool.install_cmd
     return commands
 
 
@@ -826,7 +929,7 @@ def main() -> None:
     """
     🐺 Lyncus — Multi-language code quality scanner.
 
-    "Jo dikhta nahi, woh pakad lega"
+    "Find the issues others miss"
     """
     pass
 

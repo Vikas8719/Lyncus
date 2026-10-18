@@ -18,10 +18,9 @@ from __future__ import annotations
 import os
 import platform
 import shutil
-import sys
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich import box
 from rich.console import Console
@@ -29,14 +28,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from Lyncus.core.platform import (
-    current_os,
-    is_ci,
-    should_skip_tool_on_platform,
-    ci_provider,
-    LINUX_NATIVE_TOOLS,
-    WINDOWS_INCOMPATIBLE_TOOLS,
-)
+import Lyncus.core.platform as _lyncus_platform
+import contextlib
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 console = Console()
 
@@ -57,7 +53,7 @@ class ToolPreview:
     install_cmd: str
     will_run: bool = True    # False = skipped (e.g. mutation on Windows)
     skip_reason: str = ""
-    auto_create: bool = False  # RapidCheck runner auto-create hoga
+    auto_create: bool = False  # RapidCheck runner auto-create h
 
 
 @dataclass
@@ -187,6 +183,7 @@ _LANGUAGE_TOOLS: dict[str, list[tuple[str, str, str, str, str]]] = {
     # ── C# ────────────────────────────────────────────────────────────────────
     "csharp": [
         ("dotnet",        "Roslyn — compiler + built-in analyzers", "quality",  "dotnet",        "dotnet.microsoft.com"),
+        ("roslynator",    "500+ Roslyn quality rules — cross-platform", "quality", "roslynator", "dotnet tool install -g roslynator.dotnet.cli"),
         ("security-scan", "Security holes — .NET specific",         "security", "security-scan", "dotnet tool install -g security-scan"),
         ("semgrep",       "Security patterns — OWASP",              "security", "semgrep",       "pip install semgrep"),
         ("FsCheck",       "Property-based testing",                 "property", "dotnet",        "dotnet add package FsCheck"),
@@ -355,7 +352,6 @@ _PROPERTY_TEST_AUTO_CREATE: dict[str, bool] = {
 
 # Tools jo Linux-only hain
 _LINUX_ONLY_TOOLS: set[str] = {
-    "valgrind",
     "cargo-tarpaulin",
     # Sanitizers — clang -fsanitize=* Linux/macOS pe proper support; Windows pe limited
     "asan-cpp", "ubsan-cpp", "compsan-cpp",
@@ -364,6 +360,8 @@ _LINUX_ONLY_TOOLS: set[str] = {
     "asan-rust", "ubsan-rust", "compsan-rust",
     # compute-sanitizer GPU pe run karta hai — GPU zaroori, Windows pe bhi kaam karta hai
     # lekin Linux CI mein zyada reliable, isliye yahan rakhte hain
+    # RapidCheck: cross-platform (vcpkg/conan/brew/apt sab pe kaam karta hai)
+    # isliye _LINUX_ONLY_TOOLS mein NAHI hai
 }
 
 
@@ -393,10 +391,8 @@ def _is_windows() -> bool:
 def create_rapidcheck_runner(project_path: str) -> tuple[bool, str]:
     """
     RapidCheck runner file banao project root mein.
-    
     Agar rapidcheck header-only library project mein hai,
     yeh ek minimal runner compile karke chalata hai.
-    
     Returns:
         (success, message)
     """
@@ -477,10 +473,8 @@ def cleanup_rapidcheck_runner(project_path: str) -> None:
                   "lyncus_rapidcheck_runner.exe", "lyncus_rapidcheck_runner.o"]:
         p = Path(project_path) / fname
         if p.exists():
-            try:
+            with contextlib.suppress(OSError):
                 p.unlink()
-            except OSError:
-                pass
 
 
 # ── TOOL INSTALL CHECKERS — per-tool special cases ───────────────────────────
@@ -567,6 +561,32 @@ def _check_dotnet_stryker_tool(desc: str, check_type: str, install_cmd: str) -> 
     )
 
 
+def _check_roslynator_tool(desc: str, check_type: str, install_cmd: str) -> ToolPreview:
+    """
+    roslynator availability — dotnet global tool.
+    PATH check pehle, phir `dotnet tool list --global` fallback.
+    Cross-platform: Windows / Linux / macOS sab pe kaam karta hai.
+    """
+    installed = shutil.which("roslynator") is not None
+    if not installed:
+        # Fallback: dotnet tool list --global
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["dotnet", "tool", "list", "--global"],
+                capture_output=True, text=True, timeout=10,
+            )
+            installed = "roslynator.dotnet.cli" in result.stdout.lower()
+        except Exception:
+            installed = False
+    return ToolPreview(
+        name="roslynator", description=desc, check_type=check_type,
+        installed=installed, install_cmd=install_cmd,
+        will_run=installed,
+        skip_reason="" if installed else install_cmd,
+    )
+
+
 def _check_tool_preview(
     name: str,
     desc: str,
@@ -595,6 +615,8 @@ def _check_tool_preview(
         return _check_pitest_tool(desc, check_type, install_cmd)
     if name == "dotnet-stryker":
         return _check_dotnet_stryker_tool(desc, check_type, install_cmd)
+    if name == "roslynator":
+        return _check_roslynator_tool(desc, check_type, install_cmd)
     # Default: shutil.which
     installed = shutil.which(executable) is not None
     return ToolPreview(
@@ -740,6 +762,22 @@ def _build_mutation_info(language: str, plat: str) -> MutationInfo | None:
             install_cmd="",
         )
 
+    # Permanently skipped tools — har platform pe skip
+    if tool_name in _lyncus_platform.ALWAYS_SKIP_MUTATION_TOOLS:
+        return MutationInfo(
+            tool=tool_name,
+            supported=True,
+            installed=False,
+            platform_ok=False,
+            windows_supported=False,
+            platform_msg=(
+                f"{tool_name} permanently skipped — bahut slow hai (60+ min). "
+                f"Fast analysis ke liye disable kiya gaya hai."
+            ),
+            install_cmd=spec.install_cmd,
+            wsl_note="",
+        )
+
     # Check installation
     if tool_name == "mutmut":
         installed = _check_python_pkg("mutmut")
@@ -878,7 +916,6 @@ _TYPE_ICONS = {
 def print_preview(result: PreviewResult, *, interactive: bool = True) -> bool:
     """
     Preview print karo.
-    
     Returns:
         True = user ne scan karna chaha
         False = user ne cancel kiya

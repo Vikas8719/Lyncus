@@ -6,10 +6,11 @@ Composer.json detect karke tools chalata hai.
 from __future__ import annotations
 
 import json
-from defusedxml import ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from defusedxml import ElementTree as ET
 
 _PATH_ARGUMENT = "{path}"
 _PHPCPD_REPORT = "{tmpdir}/phpcpd.xml"
