@@ -331,13 +331,13 @@ class TestCLI:
 
     def test_version(self):
         from click.testing import CliRunner
-
+        from Lyncus import __version__
         from Lyncus.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "1.0.0" in result.output
+        assert __version__ in result.output
 
     def test_doctor_runs(self):
         from click.testing import CliRunner

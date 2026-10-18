@@ -1,5 +1,9 @@
 # 🐺 Lyncus — Multi-Language Code Quality CLI Tool
-__version__ = "1.0.0"
+from importlib.metadata import version as _meta_version, PackageNotFoundError as _PNF
+try:
+    __version__ = _meta_version("Lyncus")
+except _PNF:
+    __version__ = "0.0.0"
 __author__ = "Lyncus Contributors"
 
 # Language modules — lazy import karo (optional deps ke liye)

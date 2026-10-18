@@ -396,124 +396,137 @@ def _refresh_importlib_caches() -> None:
     _wg.clear()
 
 
-def check_tool(tool: InstallSpec) -> bool:
-    """Tool installed hai ya nahi check karo — platform-aware smart detection."""
-    import importlib
-    import platform
-
-    name = tool.name
-    cmd = tool.check_cmd
-
-    # ── Dotnet global tools — PATH + ~/.dotnet/tools/ + dotnet tool list --global ──
-    # WSL/Linux + macOS pe PATH automatically update nahi hoti after `dotnet tool install -g`
-    # Isliye sirf shutil.which() se miss hota hai — ~/.dotnet/tools/ direct check zaroori hai.
-    _DOTNET_GLOBAL_TOOLS = {
-        "roslynator":    "roslynator.dotnet.cli",
-        "dotnet-format": "dotnet-format",
-        "dotnet-stryker":"dotnet-stryker",
-        "security-scan": "security-scan",
-    }
-    if name in _DOTNET_GLOBAL_TOOLS:
-        # Layer 1: PATH check
-        if shutil.which(cmd) is not None:
-            return True
-        # Layer 2: ~/.dotnet/tools/ direct file check (WSL/macOS pe PATH nahi hoti)
-        import platform as _plat
-        home = os.path.expanduser("~")
-        dotnet_tools_dirs = [
-            os.path.join(home, ".dotnet", "tools"),
-        ]
-        dotnet_root = os.environ.get("DOTNET_ROOT", "")
-        if dotnet_root:
-            dotnet_tools_dirs.insert(0, os.path.join(dotnet_root, "tools"))
-        exe_suffix = ".exe" if _plat.system().lower() == "windows" else ""
-        for tools_dir in dotnet_tools_dirs:
-            candidate = os.path.join(tools_dir, f"{cmd}{exe_suffix}")
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return True
-            # Windows: .exe extension
-            candidate_exe = os.path.join(tools_dir, f"{cmd}.exe")
-            if os.path.isfile(candidate_exe):
-                return True
-        # Layer 3: dotnet tool list --global (definitive but ~0.5s)
-        try:
-            result = subprocess.run(
-                ["dotnet", "tool", "list", "--global"],
-                capture_output=True, text=True, timeout=15,
-            )
-            pkg_id = _DOTNET_GLOBAL_TOOLS.get(name, name)
-            return pkg_id.lower() in result.stdout.lower() or name.lower() in result.stdout.lower()
-        except Exception:
-            return False
-
-    # ── Python packages — importlib.find_spec() check (works in venv too) ──
-    _PYTHON_PACKAGES = {
-        "hypothesis": "hypothesis",
-        "mutmut": "mutmut",
-        "pytest-cov": "pytest_cov",
-        "radon": "radon",
-        "bandit": "bandit",
-        "vulture": "vulture",
-        "mypy": "mypy",
-        "ruff": "ruff",
-        "pip-audit": "pip_audit",
-        "flawfinder": "flawfinder",
-        "lizard": "lizard",
-        "cpplint": "cpplint",
-    }
-    if name in _PYTHON_PACKAGES:
-        # importlib cache pehle fresh karo taaki manual install reflect ho
-        _refresh_importlib_caches()
-        module_name = _PYTHON_PACKAGES[name]
-        if importlib.util.find_spec(module_name) is not None:
-            return True
-        # shutil.which fallback — PATH mein dhundo
-        if shutil.which(cmd) is not None:
-            return True
-        # venv paths check karo (Windows: Scripts, Linux: bin)
-        venv_paths = _get_venv_paths()
-        for venv_bin in venv_paths:
-            candidate = os.path.join(venv_bin, cmd)
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return True
-        # WSL / Linux: pip install --user → ~/.local/bin/ bhi check karo
-        if sys.platform != "win32":
-            home_local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin", cmd)
-            if os.path.isfile(home_local_bin) and os.access(home_local_bin, os.X_OK):
-                return True
-            # System-level install: /usr/local/bin/ ya /usr/bin/
-            for sys_bin in ("/usr/local/bin", "/usr/bin"):
-                sys_candidate = os.path.join(sys_bin, cmd)
-                if os.path.isfile(sys_candidate) and os.access(sys_candidate, os.X_OK):
-                    return True
+def _is_dotnet_sdk_available() -> bool:
+    if shutil.which("dotnet") is None:
+        return False
+    try:
+        r = subprocess.run(
+            ["dotnet", "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.returncode == 0
+    except Exception:
         return False
 
-    # ── Windows-specific paths check karo for system tools ──
-    if platform.system().lower() == "windows":
-        _WINDOWS_PATHS: dict[str, list[str]] = {
-            "cppcheck": [
-                r"C:\Program Files\Cppcheck\cppcheck.exe",
-                r"C:\Program Files (x86)\Cppcheck\cppcheck.exe",
-            ],
-            "clang-tidy": [
-                r"C:\Program Files\LLVM\bin\clang-tidy.exe",
-                r"C:\Program Files (x86)\LLVM\bin\clang-tidy.exe",
-            ],
-            "clang++": [
-                r"C:\Program Files\LLVM\bin\clang++.exe",
-                r"C:\Program Files (x86)\LLVM\bin\clang++.exe",
-            ],
-            "compute-sanitizer": [
-                r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\compute-sanitizer.exe",
-                r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin\compute-sanitizer.exe",
-            ],
-        }
-        if cmd in _WINDOWS_PATHS:
-            for path in _WINDOWS_PATHS[cmd]:
-                if os.path.isfile(path):
-                    return True
 
-    # ── Default: shutil.which check ──
+def _check_dotnet_global_tool(name: str, cmd: str) -> bool:
+    _DOTNET_GLOBAL_TOOLS = {
+        "roslynator":     "roslynator.dotnet.cli",
+        "dotnet-format":  "dotnet-format",
+        "dotnet-stryker": "dotnet-stryker",
+        "security-scan":  "security-scan",
+    }
+    if not _is_dotnet_sdk_available():
+        return False
+    if shutil.which(cmd) is not None:
+        return True
+    import platform as _plat
+    home = os.path.expanduser("~")
+    dotnet_root = os.environ.get("DOTNET_ROOT", "")
+    tools_dirs = ([os.path.join(dotnet_root, "tools")] if dotnet_root else []) + [
+        os.path.join(home, ".dotnet", "tools")
+    ]
+    exe = ".exe" if _plat.system().lower() == "windows" else ""
+    for d in tools_dirs:
+        if os.path.isfile(os.path.join(d, f"{cmd}{exe}")):
+            return True
+        if os.path.isfile(os.path.join(d, f"{cmd}.exe")):
+            return True
+    try:
+        result = subprocess.run(
+            ["dotnet", "tool", "list", "--global"],
+            capture_output=True, text=True, timeout=15,
+        )
+        pkg_id = _DOTNET_GLOBAL_TOOLS.get(name, name).lower()
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            if parts and parts[0].lower() == pkg_id:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _check_python_package(name: str, cmd: str) -> bool:
+    import importlib
+    _PYTHON_PACKAGES = {
+        "hypothesis": "hypothesis",
+        "mutmut":     "mutmut",
+        "pytest-cov": "pytest_cov",
+        "radon":      "radon",
+        "bandit":     "bandit",
+        "vulture":    "vulture",
+        "mypy":       "mypy",
+        "ruff":       "ruff",
+        "pip-audit":  "pip_audit",
+        "flawfinder": "flawfinder",
+        "lizard":     "lizard",
+        "cpplint":    "cpplint",
+    }
+    _refresh_importlib_caches()
+    module = _PYTHON_PACKAGES.get(name)
+    if module and importlib.util.find_spec(module) is not None:
+        return True
+    if shutil.which(cmd) is not None:
+        return True
+    for venv_bin in _get_venv_paths():
+        candidate = os.path.join(venv_bin, cmd)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return True
+    if sys.platform != "win32":
+        home_bin = os.path.join(os.path.expanduser("~"), ".local", "bin", cmd)
+        if os.path.isfile(home_bin) and os.access(home_bin, os.X_OK):
+            return True
+        for sys_bin in ("/usr/local/bin", "/usr/bin"):
+            p = os.path.join(sys_bin, cmd)
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return True
+    return False
+
+
+def _check_windows_system_tool(cmd: str) -> bool:
+    _WINDOWS_PATHS: dict[str, list[str]] = {
+        "cppcheck": [
+            r"C:\Program Files\Cppcheck\cppcheck.exe",
+            r"C:\Program Files (x86)\Cppcheck\cppcheck.exe",
+        ],
+        "clang-tidy": [
+            r"C:\Program Files\LLVM\bin\clang-tidy.exe",
+            r"C:\Program Files (x86)\LLVM\bin\clang-tidy.exe",
+        ],
+        "clang++": [
+            r"C:\Program Files\LLVM\bin\clang++.exe",
+            r"C:\Program Files (x86)\LLVM\bin\clang++.exe",
+        ],
+        "compute-sanitizer": [
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\compute-sanitizer.exe",
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin\compute-sanitizer.exe",
+        ],
+    }
+    return any(os.path.isfile(p) for p in _WINDOWS_PATHS.get(cmd, []))
+
+
+def check_tool(tool: InstallSpec) -> bool:
+    import platform
+    name = tool.name
+    cmd  = tool.check_cmd
+
+    _DOTNET_GLOBAL_TOOLS = {
+        "roslynator", "dotnet-format", "dotnet-stryker", "security-scan"
+    }
+    if name in _DOTNET_GLOBAL_TOOLS:
+        return _check_dotnet_global_tool(name, cmd)
+
+    _PYTHON_PACKAGES = {
+        "hypothesis", "mutmut", "pytest-cov", "radon", "bandit",
+        "vulture", "mypy", "ruff", "pip-audit", "flawfinder", "lizard", "cpplint",
+    }
+    if name in _PYTHON_PACKAGES:
+        return _check_python_package(name, cmd)
+
+    if platform.system().lower() == "windows" and _check_windows_system_tool(cmd):
+        return True
+
     return shutil.which(cmd) is not None
 
 
@@ -608,6 +621,26 @@ def print_doctor_table(language: str = "all") -> None:
     total = len(tools)
     available_count = sum(1 for t in tools if check_tool(t))
 
+    _DOTNET_GLOBAL = {"roslynator", "dotnet-stryker", "security-scan", "dotnet-format"}
+    _dotnet_sdk_ok: bool | None = None
+
+    def _check_dotnet_sdk() -> bool:
+        nonlocal _dotnet_sdk_ok
+        if _dotnet_sdk_ok is not None:
+            return _dotnet_sdk_ok
+        if shutil.which("dotnet") is None:
+            _dotnet_sdk_ok = False
+            return False
+        try:
+            r = subprocess.run(
+                ["dotnet", "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            _dotnet_sdk_ok = r.returncode == 0
+        except Exception:
+            _dotnet_sdk_ok = False
+        return _dotnet_sdk_ok
+
     console.print()
     for lang, tool_list in by_lang.items():
         console.print(f"\n  [bold cyan]{lang.upper()} Tools:[/bold cyan]")
@@ -641,21 +674,25 @@ def print_doctor_table(language: str = "all") -> None:
                     "wsl --install[/dim]"
                 )
             else:
-                # Normal case — best install command dikhao
-                install_hint = _pick_install_cmd(tool.install_cmds) or (
-                    tool.install_cmds[0] if tool.install_cmds else ""
-                )
-                console.print(
-                    f"    [red]❌[/red]  {tool.name:<22} "
-                    f"[dim]NOT INSTALLED[/dim]  → [yellow]{install_hint}[/yellow]"
-                )
-                # dotnet global tools ke liye PATH hint — WSL/macOS pe common issue
-                _DOTNET_GLOBAL = {"roslynator", "dotnet-stryker", "security-scan", "dotnet-format"}
-                if tool.name in _DOTNET_GLOBAL and not is_windows:
+                if tool.name in _DOTNET_GLOBAL and not ok and not _check_dotnet_sdk():
                     console.print(
-                        "    [dim]     💡 After install, add to PATH: "
-                        "export PATH=$PATH:~/.dotnet/tools  (add to ~/.bashrc or ~/.zshrc)[/dim]"
+                        f"    [red]❌[/red]  {tool.name:<22} "
+                        f"[dim]NOT INSTALLED[/dim]  "
+                        f"[dim](requires .NET SDK → https://aka.ms/dotnet/download)[/dim]"
                     )
+                else:
+                    install_hint = _pick_install_cmd(tool.install_cmds) or (
+                        tool.install_cmds[0] if tool.install_cmds else ""
+                    )
+                    console.print(
+                        f"    [red]❌[/red]  {tool.name:<22} "
+                        f"[dim]NOT INSTALLED[/dim]  → [yellow]{install_hint}[/yellow]"
+                    )
+                    if tool.name in _DOTNET_GLOBAL and not is_windows:
+                        console.print(
+                            "    [dim]     💡 After install, add to PATH: "
+                            "export PATH=$PATH:~/.dotnet/tools  (add to ~/.bashrc or ~/.zshrc)[/dim]"
+                        )
 
     console.print()
     console.rule()
@@ -766,16 +803,32 @@ def install_missing(language: str = "all", dry_run: bool = False) -> None:
     # macOS pe: brew commands seedha run karo
 
     for tool in missing:
-        # Pick best install command for current OS
         cmd = _pick_install_cmd(tool.install_cmds)
 
-        # System installer commands (apt/brew/winget) — special handling
         _SYSTEM_INSTALLER_PREFIXES = ("apt-get ", "apt ", "brew ", "winget ", "choco ")
-        is_system_cmd = cmd and cmd.lower().startswith(_SYSTEM_INSTALLER_PREFIXES) if cmd else False
 
         if not cmd:
             _show_manual_install_hint(tool)
             continue
+
+        if cmd.lower().startswith("dotnet tool install"):
+            try:
+                r = subprocess.run(
+                    ["dotnet", "--version"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode != 0:
+                    console.print(
+                        f"  [yellow]⚠️   {tool.name}[/yellow]: .NET SDK not installed — "
+                        f"download from https://aka.ms/dotnet/download first\n"
+                    )
+                    continue
+            except Exception:
+                console.print(
+                    f"  [yellow]⚠️   {tool.name}[/yellow]: .NET SDK not found — "
+                    f"download from https://aka.ms/dotnet/download first\n"
+                )
+                continue
 
         # Linux apt commands: sudo prepend karo automatically
         if os_name == "linux" and cmd.lower().startswith(("apt-get ", "apt ")):

@@ -54,7 +54,7 @@ from Lyncus.rules.hardcode_rules import scan_file_for_hardcode
 console = Console()
 
 # Named version constant — shared between cli.py and reporter.py
-_LYNCUS_VERSION = "1.0.0"
+from Lyncus import __version__ as _LYNCUS_VERSION
 
 SUPPORTED_LANGUAGES = get_supported_languages()
 

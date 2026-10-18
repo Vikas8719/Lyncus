@@ -138,15 +138,12 @@ URL_PATTERNS: list[tuple[str, str, str]] = [
 
 # ── MAGIC NUMBER PATTERNS ────────────────────────────────────────────────────
 MAGIC_NUMBER_PATTERNS: list[tuple[str, str, str]] = [
-    # 3+ digit numbers jo variable assignment mein hain
     (
         r"(?<![.\d])\b([0-9]{4,})\b(?![.\d])",
         "HC030",
-        "Magic number detected — naam wala constant use karo",
+        "Magic number detected — use a named constant instead",
     ),
-    # Float magic numbers
-    (r"=\s*0\.[0-9]{4,}", "HC031", "Magic float constant — naam wala constant use karo"),
-    # Port numbers hardcoded
+    (r"=\s*0\.[0-9]{4,}", "HC031", "Magic float constant — use a named constant instead"),
     (r"(?i)(port)\s*=\s*\d{4,5}", "HC032", "Hardcoded port number — use config/env variable"),
 ]
 
